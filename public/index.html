@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>หมากสี่กระดาน</title>
+  <meta name="description" content="เกมกระดานออนไลน์ 2 ผู้เล่น หมากทุกตัวเป็นของกลาง ใครถึงเทิร์นก็หยิบไปเล่นได้" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#9899;</text></svg>" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="toasts" class="toasts"></div>
+
+  <!-- ─────────────────────────── หน้าแรก / Lobby ─────────────────────────── -->
+  <section id="screen-lobby" class="screen">
+    <header class="brand">
+      <h1>หมากสี่กระดาน</h1>
+      <p class="tagline">หมากเดียวกัน ใครก็ใช้ได้ แต่คะแนนเป็นของคนกิน</p>
+      <button class="ghost help-open" data-help>📖 วิธีเล่น</button>
+    </header>
+
+    <div class="card" id="account-card">
+      <div id="guest-box">
+        <label class="field">
+          <span>ชื่อของคุณ</span>
+          <input id="name-input" type="text" maxlength="20" placeholder="Guest" autocomplete="off" />
+        </label>
+        <p class="muted" id="session-line">กำลังเชื่อมต่อ…</p>
+      </div>
+
+      <details id="auth-box" class="auth hidden">
+        <summary>มีบัญชีแล้ว หรืออยากเก็บ rating? เข้าสู่ระบบ / สมัคร</summary>
+        <form id="auth-form" class="auth-form">
+          <input id="auth-username" type="email" placeholder="อีเมล" autocomplete="email" />
+          <input id="auth-password" type="password" placeholder="รหัสผ่าน อย่างน้อย 8 ตัว" autocomplete="current-password" />
+          <div class="row">
+            <button type="submit" class="primary small">เข้าสู่ระบบ</button>
+            <button type="button" id="btn-register" class="ghost small">สมัครใหม่</button>
+          </div>
+          <div id="google-signin" class="hidden"></div>
+          <p class="muted" id="auth-error"></p>
+        </form>
+      </details>
+
+      <div id="otp-box" class="auth-form hidden">
+        <p class="muted">ส่งรหัส 6 หลักไปที่อีเมลของคุณแล้ว กรอกเพื่อยืนยันบัญชี</p>
+        <input id="otp-code" type="text" inputmode="numeric" maxlength="6" placeholder="รหัส 6 หลัก" autocomplete="one-time-code" />
+        <div class="row">
+          <button id="btn-verify-otp" class="primary small">ยืนยัน</button>
+          <button id="btn-resend-otp" class="ghost small">ส่งรหัสใหม่</button>
+        </div>
+        <p class="muted" id="otp-error"></p>
+      </div>
+
+      <div id="user-box" class="user-box hidden">
+        <div>
+          <b id="user-name"></b>
+          <span class="rating" id="user-rating"></span>
+          <div class="muted" id="user-record"></div>
+          <div class="muted" id="user-verify"></div>
+        </div>
+        <button id="btn-logout" class="ghost small">ออกจากระบบ</button>
+      </div>
+    </div>
+
+    <div class="card menu">
+      <button id="btn-quick" class="primary big">Quick Match</button>
+      <div id="queue-box" class="queue hidden">
+        <span class="spinner"></span> กำลังหาคู่แข่ง…
+        <button id="btn-cancel-queue" class="ghost small">ยกเลิก</button>
+      </div>
+
+      <div class="room-options">
+        <label class="field">
+          <span>จำนวนผู้เล่น</span>
+          <select id="room-capacity">
+            <option value="2" selected>2 คน</option>
+            <option value="3">3 คน</option>
+            <option value="4">4 คน</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>กติกา</span>
+          <select id="room-mode">
+            <option value="assisted" selected>ช่วยคำนวณ — บังคับกินสูงสุด ชี้เป้าให้ครบ</option>
+            <option value="standard">มาตรฐาน — ไม่บังคับ ไม่บอกช่องที่ลงได้</option>
+            <option value="table">กระดานจริง — ไม่ช่วยอะไรเลย</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>การมองเห็น</span>
+          <select id="room-visibility">
+            <option value="private" selected>Private (เข้าด้วยรหัส/ลิงก์)</option>
+            <option value="public">Public (โชว์ในรายการห้อง)</option>
+          </select>
+        </label>
+      </div>
+      <button id="btn-create-room" class="big">Create Room</button>
+
+      <form id="join-form" class="join-row">
+        <input id="join-code" type="text" maxlength="6" placeholder="รหัสห้อง เช่น K4D8Q2" autocomplete="off" />
+        <button type="submit">Join</button>
+      </form>
+
+      <button id="btn-challenge" class="big">Challenge</button>
+
+      <div class="ai-row">
+        <span>เล่นกับ AI</span>
+        <div class="row">
+          <button class="small" data-ai="easy">ง่าย</button>
+          <button class="small" data-ai="normal">ปานกลาง</button>
+          <button class="small" data-ai="hard">ยาก</button>
+        </div>
+      </div>
+
+      <label class="field turn-field">
+        <span>เวลาต่อเทิร์น (ใช้กับ Create Room และ AI)</span>
+        <select id="turn-seconds">
+          <option value="30">30 วินาที</option>
+          <option value="45" selected>45 วินาที</option>
+          <option value="60">60 วินาที</option>
+          <option value="120">2 นาที</option>
+          <option value="0">ไม่จำกัดเวลา</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>ห้อง Public ที่เปิดอยู่</h2>
+        <button id="btn-refresh-rooms" class="ghost small">รีเฟรช</button>
+      </div>
+      <ul id="rooms-list" class="players"></ul>
+    </div>
+
+    <div class="card hidden" id="leaderboard-card">
+      <div class="card-head">
+        <h2>อันดับผู้เล่น</h2>
+        <button id="btn-refresh-leaderboard" class="ghost small">รีเฟรช</button>
+      </div>
+      <ol id="leaderboard" class="leaderboard"></ol>
+      <p class="muted">นับเฉพาะแมตช์ที่ทุกที่นั่งเป็นบัญชีที่สมัครแล้ว ไม่นับเกมที่มี AI หรือ Guest</p>
+    </div>
+
+    <div class="card hidden" id="friends-card">
+      <div class="card-head">
+        <h2>เพื่อน</h2>
+        <button id="btn-refresh-friends" class="ghost small">รีเฟรช</button>
+      </div>
+      <form id="friend-add-form" class="join-row">
+        <input id="friend-identifier" type="text" placeholder="ชื่อผู้ใช้หรืออีเมลของเพื่อน" autocomplete="off" />
+        <button type="submit">เพิ่ม</button>
+      </form>
+      <ul id="friend-requests" class="players"></ul>
+      <ul id="friends-list" class="players"></ul>
+    </div>
+
+    <div id="players-card" class="card hidden">
+      <div class="card-head">
+        <h2>ผู้เล่นที่ว่างอยู่</h2>
+        <button id="btn-refresh-players" class="ghost small">รีเฟรช</button>
+      </div>
+      <ul id="players-list" class="players"></ul>
+    </div>
+
+    <footer class="lobby-foot">
+      <span id="online-count">Online Players: –</span>
+    </footer>
+  </section>
+
+  <!-- ───────────────────────────────── ห้อง ───────────────────────────────── -->
+  <section id="screen-room" class="screen hidden">
+    <div class="card room-card">
+      <h2>ห้องส่วนตัว</h2>
+      <div class="room-code" id="room-code">------</div>
+      <button id="btn-copy-invite" class="ghost">คัดลอกลิงก์เชิญ</button>
+      <p class="muted" id="room-meta"></p>
+      <div class="room-players" id="room-players"></div>
+      <div class="row bot-controls" id="bot-controls">
+        <span class="muted">เพิ่ม AI:</span>
+        <button class="small" data-add-bot="easy">ง่าย</button>
+        <button class="small" data-add-bot="normal">ปานกลาง</button>
+        <button class="small" data-add-bot="hard">ยาก</button>
+      </div>
+      <p class="muted" id="room-status"></p>
+      <div class="row">
+        <button id="btn-start-room" class="primary" disabled>Start</button>
+        <button id="btn-leave-room" class="ghost">ออกจากห้อง</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────────────── เกม ───────────────────────────────── -->
+  <section id="screen-game" class="screen game hidden">
+    <div class="scoreboard">
+      <div class="mid">
+        <div class="turn-no" id="turn-no">Turn 1</div>
+        <div class="timer" id="timer">–</div>
+      </div>
+      <div class="score-list" id="score-list"></div>
+    </div>
+
+    <p class="status" id="game-status">กำลังเริ่มเกม…</p>
+
+    <div class="board-wrap">
+      <div id="board" class="board"></div>
+    </div>
+
+    <div class="chain-slot"><div class="chain-bar hidden" id="chain-bar"></div></div>
+
+    <div class="row game-actions">
+      <button id="btn-end-turn" class="primary small hidden">จบเทิร์น</button>
+      <button id="btn-cancel-select" class="ghost small hidden">ยกเลิกการเลือก</button>
+      <button id="btn-offer-end" class="ghost small">ขอจบเกม</button>
+      <button id="btn-resign" class="ghost small danger">ยอมแพ้</button>
+      <button class="ghost small" data-help>📖 วิธีเล่น</button>
+    </div>
+
+    <div id="end-offer" class="card offer hidden">
+      <span id="end-offer-text"></span>
+      <div class="row" id="end-offer-vote">
+        <button id="btn-accept-end" class="primary small">ยอมรับ</button>
+        <button id="btn-decline-end" class="ghost small">เล่นต่อ</button>
+      </div>
+      <div class="row hidden" id="end-offer-waiting">
+        <button id="btn-cancel-end" class="ghost small">ถอนคำขอ</button>
+      </div>
+    </div>
+
+    <div class="card log-card">
+      <h2>ประวัติการเดิน</h2>
+      <ol id="log" class="log"></ol>
+    </div>
+  </section>
+
+  <!-- ──────────────────────────────── ผลเกม ──────────────────────────────── -->
+  <section id="screen-result" class="screen hidden">
+    <div class="card result-card">
+      <h2 id="result-title">GAME OVER</h2>
+      <div class="result-scores" id="result-scores"></div>
+      <p class="muted" id="result-reason"></p>
+      <div class="table-scroll"><table class="stats" id="result-stats"></table></div>
+      <div class="row">
+        <button id="btn-rematch" class="primary">เล่นอีกครั้ง</button>
+        <button id="btn-back-lobby" class="ghost">กลับ Lobby</button>
+      </div>
+      <p class="muted" id="rematch-status"></p>
+      <details class="replay">
+        <summary>ประวัติการเดินทั้งหมด</summary>
+        <ol id="result-history" class="log"></ol>
+      </details>
+    </div>
+  </section>
+
+  <!-- ────────────────────────────── คำท้าเข้ามา ────────────────────────────── -->
+  <div id="challenge-modal" class="modal hidden">
+    <div class="card">
+      <h2 id="challenge-text">มีคนท้าคุณ</h2>
+      <div class="row">
+        <button id="btn-accept-challenge" class="primary">Accept</button>
+        <button id="btn-decline-challenge" class="ghost">Decline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ───────────────────────────── คำเชิญเข้าห้อง ───────────────────────────── -->
+  <div id="invite-modal" class="modal hidden">
+    <div class="card">
+      <h2 id="invite-text">มีคนชวนคุณเข้าห้อง</h2>
+      <p class="muted" id="invite-detail"></p>
+      <div class="row">
+        <button id="btn-accept-invite" class="primary">เข้าร่วม</button>
+        <button id="btn-decline-invite" class="ghost">ไว้ก่อน</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────── วิธีเล่น ────────────────────────────── -->
+  <div id="help-modal" class="modal help hidden" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="card help-card">
+      <div class="help-head">
+        <h2 id="help-title">วิธีเล่นหมากสี่กระดาน</h2>
+        <button id="help-close" class="ghost small" aria-label="ปิด">✕</button>
+      </div>
+
+      <div class="help-body">
+        <section>
+          <h3>สิ่งเดียวที่ต้องจำ</h3>
+          <p class="lead">หมากบนกระดาน <b>ไม่มีเจ้าของ</b> ถึงตาใคร คนนั้นหยิบตัวไหนก็ได้
+            สิ่งที่เป็นของคุณจริง ๆ มีอย่างเดียวคือ <b>คะแนนจากการกิน</b></p>
+        </section>
+
+        <section>
+          <h3>กระดาน</h3>
+          <p>8×8 = 64 ช่อง เริ่มเกมด้วยหมาก 60 ตัว เว้นช่องกลาง 4 ช่องว่างไว้
+            ช่องว่างพวกนี้แหละคือที่ที่การกินครั้งแรกจะเกิดขึ้น</p>
+        </section>
+
+        <section>
+          <h3>การกิน — กระโดดข้ามไปช่องว่างถัดไป</h3>
+          <div class="mini-row">
+            <div class="mini" data-mini="capture-before"></div>
+            <span class="mini-arrow">→</span>
+            <div class="mini" data-mini="capture-after"></div>
+          </div>
+          <p>หมากที่ถูกข้ามถูกเก็บออกจากกระดาน คุณได้ <b>1 คะแนน</b> ต่อ 1 ตัว</p>
+        </section>
+
+        <section>
+          <h3>กินได้ทั้ง 8 ทิศ</h3>
+          <div class="mini-row">
+            <div class="mini" data-mini="directions"></div>
+          </div>
+          <p>ทั้งแนวตั้ง แนวนอน และแนวทแยง ขอแค่มีหมากให้ข้าม และช่องถัดไปว่าง</p>
+        </section>
+
+        <section>
+          <h3>กินต่อเนื่อง และเปลี่ยนทิศได้</h3>
+          <div class="mini-row">
+            <div class="mini" data-mini="chain-1"></div>
+            <span class="mini-arrow">→</span>
+            <div class="mini" data-mini="chain-2"></div>
+            <span class="mini-arrow">→</span>
+            <div class="mini" data-mini="chain-3"></div>
+          </div>
+          <p>กินแล้วถ้ายังกินต่อได้ ก็กินต่อในเทิร์นเดียวกัน เทิร์นเดียวได้หลายคะแนน</p>
+        </section>
+
+        <section>
+          <h3>ถ้าหมากที่เลือกกินไม่ได้</h3>
+          <div class="mini-row">
+            <div class="mini" data-mini="move"></div>
+          </div>
+          <p>ขยับได้ 1 ช่องใน 8 ทิศ แล้วจบเทิร์น การเดินไม่ได้คะแนน แต่ใช้จัดกระดาน</p>
+        </section>
+
+        <section class="warn-box">
+          <h3>กับดักของเกมนี้</h3>
+          <p>เพราะหมากเป็นของกลาง <b>ทางที่คุณจัดไว้ให้ตัวเอง คู่แข่งหยิบไปใช้ได้ทันที</b>
+            ขยับหมากเพื่อเตรียม chain ยาว ๆ ไว้ อีกฝ่ายอาจหยิบหมากตัวเดียวกันนั้นกินรวดไปเลย</p>
+        </section>
+
+        <section>
+          <h3>โหมดกติกา</h3>
+          <table class="help-table" id="help-modes">
+            <tr><th>โหมด</th><th>บังคับกินสูงสุด</th><th>ชี้เป้าให้</th></tr>
+            <tr data-mode="assisted"><td>ช่วยคำนวณ</td><td>ใช่</td><td>บอกครบทุกช่อง</td></tr>
+            <tr data-mode="standard"><td>มาตรฐาน</td><td>ไม่</td><td>บอกแค่ตัวที่เล่นได้</td></tr>
+            <tr data-mode="table"><td>กระดานจริง</td><td>ไม่</td><td>ไม่บอกอะไรเลย</td></tr>
+          </table>
+          <p class="muted" id="help-mode-note">โหมดที่ไม่บังคับ คุณจะหยุดกลาง chain เองได้
+            และเดินหมากเปล่าทั้งที่กินได้ก็ได้ — คะแนนที่ไม่เก็บจะกลายเป็นของคู่แข่ง</p>
+        </section>
+
+        <section>
+          <h3>เกมจบเมื่อไร</h3>
+          <p>เมื่อไม่มีการกินติดต่อกันครบตามลิมิต (ปกติ 20 เทิร์น) หรือผู้เล่นทุกคนโหวตให้จบ
+            หรือเหลือผู้เล่นคนเดียว <b>คนคะแนนมากที่สุดชนะ</b> คะแนนเท่ากันคือชนะร่วมกัน</p>
+        </section>
+      </div>
+
+      <div class="help-foot">
+        <button id="help-done" class="primary">เข้าใจแล้ว</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
