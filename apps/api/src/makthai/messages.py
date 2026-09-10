@@ -109,6 +109,67 @@ MESSAGES: dict[str, dict[Locale, str]] = {
     },
     "password_too_long": {"th": "รหัสผ่านยาวเกินไป", "en": "Password is too long"},
     "email_not_found": {"th": "ไม่พบบัญชีที่ใช้อีเมลนี้", "en": "No account uses that email"},
+    "otp_sent": {
+        "th": "ถ้าอีเมลนี้มีบัญชีอยู่ ระบบได้ส่งรหัสไปให้แล้ว",
+        "en": "If that email has an account, a code has been sent",
+    },
+    "otp_invalid": {
+        "th": "รหัสไม่ถูกต้องหรือหมดอายุแล้ว",
+        "en": "That code is wrong or has expired",
+    },
+    "otp_too_many_attempts": {
+        "th": "กรอกรหัสผิดหลายครั้งเกินไป ขอรหัสใหม่อีกครั้ง",
+        "en": "Too many wrong attempts, request a new code",
+    },
+    "verification_sent": {
+        "th": "ส่งรหัสยืนยันไปที่อีเมลแล้ว",
+        "en": "A verification code has been sent to your email",
+    },
+    "email_already_verified": {"th": "อีเมลนี้ยืนยันแล้ว", "en": "That email is already verified"},
+    "google_disabled": {
+        "th": "เซิร์ฟเวอร์นี้ไม่ได้เปิดล็อกอินด้วย Google",
+        "en": "Google sign-in is not enabled on this server",
+    },
+    "google_invalid": {
+        "th": "ตรวจสอบโทเคนของ Google ไม่ผ่าน",
+        "en": "Could not verify that Google token",
+    },
+    "password_changed": {
+        "th": "เปลี่ยนรหัสผ่านเรียบร้อยแล้ว",
+        "en": "Your password has been changed",
+    },
+    "reset_email_subject": {
+        "th": "รหัสตั้งรหัสผ่านใหม่หมากไทย: {code}",
+        "en": "Your mak-thai password reset code: {code}",
+    },
+    "reset_email_body": {
+        "th": (
+            "มีคนขอตั้งรหัสผ่านใหม่ให้บัญชีนี้ รหัสคือ {code}\n\n"
+            "ใช้ได้ภายใน {minutes} นาที และใช้ได้ครั้งเดียว\n"
+            "ถ้าคุณไม่ได้เป็นคนขอ ไม่ต้องทำอะไร รหัสผ่านเดิมยังใช้ได้ตามปกติ"
+        ),
+        "en": (
+            "Someone asked to set a new password for this account. Your code is {code}\n\n"
+            "It is valid for {minutes} minutes and can be used once.\n"
+            "If this was not you, do nothing — your current password still works."
+        ),
+    },
+    "otp_email_subject": {
+        "th": "รหัสยืนยันหมากไทย: {code}",
+        "en": "Your mak-thai code: {code}",
+    },
+    "otp_email_body": {
+        "th": (
+            "รหัสยืนยันของคุณคือ {code}\n\n"
+            "ใช้ได้ภายใน {minutes} นาที และใช้ได้ครั้งเดียว\n"
+            "ถ้าคุณไม่ได้เป็นคนขอ ไม่ต้องทำอะไร"
+        ),
+        "en": (
+            "Your verification code is {code}\n\n"
+            "Valid for {minutes} minutes, single use.\n"
+            "If you did not request this, you can ignore this email."
+        ),
+    },
     "rate_limited": {
         "th": "ทำรายการถี่เกินไป รอสักครู่แล้วลองใหม่",
         "en": "Too many attempts, please wait and try again",

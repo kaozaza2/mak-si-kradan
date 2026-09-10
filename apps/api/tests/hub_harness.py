@@ -66,6 +66,11 @@ class HubHarness:
         options.setdefault("autopilot_grace", 5.0)
         self.hub = Hub(registry, auth_secret=SECRET, scheduler=self.scheduler, **options)
 
+    def peer(self, node_id: str | None = None, **options: Any) -> HubHarness:
+        """อีกโหนดในคลัสเตอร์เดียวกัน ใช้พิสูจน์ว่าเล่นข้ามเครื่องได้จริง"""
+        assert self.hub.cluster is not None, "โหนดนี้ยังไม่ได้อยู่ในคลัสเตอร์"
+        return HubHarness(cluster=self.hub.cluster.join(node_id), **options)
+
     def connect(self, name: str | None = None, token: str | None = None) -> FakeConnection:
         connection = FakeConnection()
         message: dict[str, Any] = {"type": "hello"}

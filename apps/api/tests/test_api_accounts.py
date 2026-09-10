@@ -1,5 +1,7 @@
 """บัญชีผู้ใช้ผ่าน HTTP จริง — ตอบเป็นรหัสเสมอ ไม่ใช่ข้อความ"""
 
+import re
+
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -19,8 +21,21 @@ async def client(monkeypatch, tmp_path):
         AsyncClient(transport=transport, base_url="http://test") as ac,
         app.router.lifespan_context(app),
     ):
+        # ติดแอปไว้กับ client เพื่อให้เทสต์อ่านกล่องจดหมายของ ConsoleMailer ได้
+        ac.app = app
         yield ac
     get_settings.cache_clear()
+
+
+def last_email(client: AsyncClient):
+    """อีเมลฉบับล่าสุดที่ระบบส่งออกไป ตอนพัฒนาเก็บไว้ในหน่วยความจำ"""
+    return client.app.state.mailer.sent[-1]
+
+
+def code_in(body: str) -> str:
+    match = re.search(r"\b(\d{6})\b", body)
+    assert match, f"ไม่พบรหัสหกหลักในอีเมล: {body}"
+    return match.group(1)
 
 
 async def register(client: AsyncClient, email: str, name: str = "ผู้เล่น") -> dict:
@@ -94,3 +109,114 @@ async def test_ประวัติของผู้เล่นที่ย�
     created = await register(client, "hist@example.com")
     response = await client.get(f"/api/v1/players/{created['user']['id']}/matches")
     assert response.json()["matches"] == []
+
+
+# ── ลืมรหัสผ่าน ─────────────────────────────────────────────────────────────
+
+
+async def forgot(client: AsyncClient, email: str) -> str:
+    response = await client.post("/api/v1/auth/forgot-password", json={"email": email})
+    assert response.json() == {"ok": True, "code": "otp_sent"}
+    return code_in(last_email(client).body)
+
+
+async def test_ลืมรหัสผ่านแล้วตั้งใหม่ได้แล้วล็อกอินด้วยรหัสใหม่(client):
+    await register(client, "forgot@example.com")
+    code = await forgot(client, "forgot@example.com")
+
+    response = await client.post(
+        "/api/v1/auth/reset-password",
+        json={"email": "forgot@example.com", "code": code, "password": "brand-new-password"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["code"] == "password_changed"
+
+    old = await client.post(
+        "/api/v1/auth/login", json={"email": "forgot@example.com", "password": "password1234"}
+    )
+    assert old.status_code == 401
+    new = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "forgot@example.com", "password": "brand-new-password"},
+    )
+    assert new.status_code == 200
+
+
+async def test_อีเมลตั้งรหัสผ่านใหม่คนละฉบับกับอีเมลยืนยัน(client):
+    await register(client, "twomails@example.com")
+    verification = last_email(client)
+    await forgot(client, "twomails@example.com")
+    reset = last_email(client)
+
+    assert verification.subject != reset.subject
+    assert verification.body != reset.body
+    assert reset.to == "twomails@example.com"
+
+
+async def test_รหัสตั้งรหัสผ่านใหม่ใช้ได้ครั้งเดียว(client):
+    await register(client, "once@example.com")
+    code = await forgot(client, "once@example.com")
+    body = {"email": "once@example.com", "code": code, "password": "brand-new-password"}
+
+    assert (await client.post("/api/v1/auth/reset-password", json=body)).status_code == 200
+    again = await client.post("/api/v1/auth/reset-password", json=body)
+    assert again.status_code == 400
+    assert again.json() == {"code": "otp_invalid"}
+
+
+async def test_รหัสผ่านใหม่ที่อ่อนเกินไปไม่กินรหัสจากอีเมลทิ้ง(client):
+    await register(client, "weak@example.com")
+    code = await forgot(client, "weak@example.com")
+
+    weak = await client.post(
+        "/api/v1/auth/reset-password",
+        json={"email": "weak@example.com", "code": code, "password": "sh0rt"},
+    )
+    assert weak.json() == {"code": "weak_password"}
+
+    # รหัสเดิมยังใช้ได้ ไม่ต้องไปขอใหม่เพราะพิมพ์รหัสผ่านสั้นไปครั้งเดียว
+    good = await client.post(
+        "/api/v1/auth/reset-password",
+        json={"email": "weak@example.com", "code": code, "password": "brand-new-password"},
+    )
+    assert good.status_code == 200
+
+
+async def test_รหัสยืนยันอีเมลเอามาตั้งรหัสผ่านใหม่ไม่ได้(client):
+    created = await register(client, "mixup@example.com")
+    assert created["verificationRequired"] is True
+    verification_code = code_in(last_email(client).body)
+
+    response = await client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "email": "mixup@example.com",
+            "code": verification_code,
+            "password": "brand-new-password",
+        },
+    )
+    assert response.json() == {"code": "otp_invalid"}
+
+
+async def test_อีเมลที่ไม่มีบัญชีตอบเหมือนกันและไม่มีอีเมลถูกส่ง(client):
+    """ไม่งั้นใช้ทางนี้ไล่เช็คได้ว่าอีเมลไหนสมัครไว้แล้ว"""
+    await register(client, "real@example.com")
+    before = len(client.app.state.mailer.sent)
+
+    response = await client.post(
+        "/api/v1/auth/forgot-password", json={"email": "ghost@example.com"}
+    )
+    assert response.json() == {"ok": True, "code": "otp_sent"}
+    assert len(client.app.state.mailer.sent) == before
+
+
+async def test_ตั้งรหัสผ่านใหม่แล้วนับว่ายืนยันอีเมลแล้วด้วย(client):
+    """รับรหัสจากกล่องจดหมายได้ก็คือคุมอีเมลนี้อยู่จริง"""
+    await register(client, "proof@example.com")
+    code = await forgot(client, "proof@example.com")
+
+    response = await client.post(
+        "/api/v1/auth/reset-password",
+        json={"email": "proof@example.com", "code": code, "password": "brand-new-password"},
+    )
+    assert response.json()["user"]["verified"] is True

@@ -125,6 +125,26 @@ const UI: Dictionary = {
     th: "ยังไม่ได้ยืนยันอีเมล เกมของคุณจะยังไม่นับอันดับ",
     en: "Email not verified yet, so your games will not count towards ranking",
   },
+  verifyNow: { th: "ยืนยันเลย", en: "Verify now" },
+  verifyTitle: { th: "ยืนยันอีเมล", en: "Verify your email" },
+  verifySent: {
+    th: "ส่งรหัสหกหลักไปที่ {email} แล้ว รหัสใช้ได้ 10 นาที",
+    en: "A six-digit code was sent to {email}. It is valid for 10 minutes.",
+  },
+  verifyCode: { th: "รหัสหกหลัก", en: "Six-digit code" },
+  verifySubmit: { th: "ยืนยัน", en: "Verify" },
+  resendCode: { th: "ส่งรหัสใหม่", en: "Send a new code" },
+  verifyLater: { th: "ไว้ทีหลัง", en: "Later" },
+  orDivider: { th: "หรือ", en: "or" },
+  forgotPassword: { th: "ลืมรหัสผ่าน", en: "Forgot your password?" },
+  resetTitle: { th: "ตั้งรหัสผ่านใหม่", en: "Set a new password" },
+  resetAsk: {
+    th: "กรอกอีเมลที่ใช้สมัคร แล้วเราจะส่งรหัสไปให้",
+    en: "Enter the email you signed up with and we will send you a code",
+  },
+  sendResetCode: { th: "ส่งรหัส", en: "Send a code" },
+  newPassword: { th: "รหัสผ่านใหม่", en: "New password" },
+  resetSubmit: { th: "ตั้งรหัสผ่านใหม่", en: "Set password" },
 
   leaderboard: { th: "อันดับผู้เล่น", en: "Leaderboard" },
   noRanked: {

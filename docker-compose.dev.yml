@@ -1,0 +1,44 @@
+# บริการที่ช่วยตอนพัฒนา ไม่ใช่ของสำหรับ deploy
+#
+# Mailpit รับอีเมลทาง SMTP แล้วเก็บไว้ในกล่องจดหมายของตัวเอง ไม่ส่งต่อออกไปไหน
+# ทำให้ทดสอบระบบบัญชีทั้งวง — สมัคร ยืนยันอีเมล ลืมรหัสผ่าน — ได้ด้วยอีเมลจริง
+# โดยไม่มีทางเผลอส่งไปหาใครจริง ๆ และสคริปต์เทสต์อ่านรหัสจาก HTTP API ของมันได้
+#
+# Redis เป็นท่อคุยกันระหว่างโหนดเมื่อรันหลายเครื่อง ไม่ตั้ง REDIS_URL ก็ทำงาน
+# เครื่องเดียวได้ตามปกติ ไม่ต้องมีอะไรทั้งนั้น
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   http://localhost:8025          กล่องจดหมาย
+#   SMTP_HOST=localhost pnpm api   ให้เซิร์ฟเวอร์ส่งเข้ากล่องนี้
+
+services:
+  mailpit:
+    image: axllent/mailpit:v1.21
+    container_name: mak-thai-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # หน้าเว็บและ API
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: mak-thai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    # ข้อมูลในนี้เป็นแค่ทางผ่านของข้อความระหว่างโหนด หายได้ไม่เสียหาย
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

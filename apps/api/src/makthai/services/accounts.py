@@ -41,6 +41,7 @@ class UserView:
     username: str | None
     email: str | None
     verified: bool
+    google: bool
     rating: int
     games_played: int
     wins: int
@@ -54,6 +55,7 @@ class UserView:
             "username": self.username,
             "email": self.email,
             "verified": self.verified,
+            "google": self.google,
             "rating": self.rating,
             "gamesPlayed": self.games_played,
             "wins": self.wins,
@@ -80,6 +82,7 @@ def to_view(player: Player) -> UserView:
         username=player.username,
         email=player.email,
         verified=player.verified,
+        google=player.google_id is not None,
         rating=player.rating,
         games_played=player.games_played,
         wins=player.wins,
@@ -236,6 +239,57 @@ class Accounts:
             {"id": p.id, "name": p.name, "username": p.username, "rating": p.rating}
             for p in rows.all()
         ]
+
+    async def login_with_google(self, identity: Any) -> AccountResult:
+        """ล็อกอินด้วย Google
+
+        ถ้าอีเมลตรงกับบัญชีเดิมที่ยืนยันแล้วจะผูกเข้าด้วยกัน ไม่สร้างบัญชีซ้ำ
+        แต่จะผูกก็ต่อเมื่อฝั่ง Google ยืนยันอีเมลนั้นแล้วเท่านั้น ไม่งั้นใครก็อ้าง
+        อีเมลของคนอื่นเพื่อยึดบัญชีได้
+        """
+        linked = await self.session.scalar(select(Player).where(Player.google_id == identity.sub))
+        if linked is not None:
+            linked.last_seen_at = utcnow()
+            await self.session.commit()
+            return AccountResult(ok=True, user=to_view(linked))
+
+        email = normalize_email(identity.email) if identity.email else None
+        if email and identity.email_verified:
+            existing = await self._by_email(email)
+            if existing is not None:
+                existing.google_id = identity.sub
+                existing.email_verified_at = existing.email_verified_at or utcnow()
+                await self.session.commit()
+                return AccountResult(ok=True, user=to_view(existing))
+
+        player = Player(
+            id=f"user_{secrets.token_hex(8)}",
+            name=identity.name or (email.split("@")[0] if email else "ผู้เล่น Google"),
+            kind="user",
+            email=email if identity.email_verified else None,
+            google_id=identity.sub,
+            email_verified_at=utcnow() if identity.email_verified else None,
+            rating=DEFAULT_RATING,
+        )
+        self.session.add(player)
+        await self.session.commit()
+        return AccountResult(ok=True, user=to_view(player))
+
+    async def set_password(self, email: str, password: str) -> AccountResult:
+        """ตั้งรหัสผ่านใหม่ให้บัญชีที่พิสูจน์แล้วว่าคุมอีเมลนี้อยู่
+
+        ผู้เรียกต้องตรวจรหัสจากอีเมลมาก่อน ตรงนี้ไม่ถามรหัสผ่านเดิม เพราะทางนี้มีไว้
+        สำหรับคนที่จำรหัสเดิมไม่ได้อยู่แล้ว
+        """
+        problem = check_password(password)
+        if problem:
+            return AccountResult.failure(problem)
+        player = await self._by_email(normalize_email(email))
+        if player is None:
+            return AccountResult.failure("email_not_found")
+        player.password_hash = hash_password(password)
+        await self.session.commit()
+        return AccountResult(ok=True, user=to_view(player))
 
     async def mark_verified(self, email: str) -> AccountResult:
         player = await self._by_email(normalize_email(email))

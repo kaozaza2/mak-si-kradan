@@ -8,6 +8,11 @@
     "test:web": "pnpm --filter @mak-thai/web test",
     "api": "cd apps/api && uv run uvicorn makthai.main:app --reload",
     "api:test": "cd apps/api && uv run pytest",
-    "api:lint": "cd apps/api && uv run ruff check . && uv run ruff format --check ."
+    "api:lint": "cd apps/api && uv run ruff check . && uv run ruff format --check .",
+    "api:migrate": "cd apps/api && uv run alembic upgrade head",
+    "api:revision": "cd apps/api && uv run alembic revision --autogenerate -m",
+    "mail": "docker compose -f docker-compose.dev.yml up -d",
+    "mail:stop": "docker compose -f docker-compose.dev.yml down",
+    "api:node2": "cd apps/api && NODE_ID=node2 uv run uvicorn makthai.main:app --reload --port 8001"
   }
 }

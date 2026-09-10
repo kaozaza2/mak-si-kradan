@@ -173,4 +173,8 @@ export interface ClientConfig {
   locales: string[];
   defaultLocale: string;
   games: string[];
+  /** ปิดเมื่อไม่ได้ต่อฐานข้อมูล — เล่นได้ครบแค่ไม่มีบัญชีกับอันดับ */
+  accounts?: boolean;
+  /** ไม่ตั้งคือไม่ต้องแสดงปุ่ม Google */
+  googleClientId?: string | null;
 }

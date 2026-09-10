@@ -47,3 +47,27 @@ async def test_แคตตาล็อกข้อความมีครบ�
     assert set(th["messages"]) == set(en["messages"])
     # ภาษาที่ไม่รองรับตกกลับมาเป็นค่าเริ่มต้น ไม่ใช่พัง
     assert (await client.get("/api/v1/messages?locale=fr")).json()["locale"] == "th"
+
+
+async def test_config_ไม่บอก_google_client_id_เมื่อยังไม่ได้ตั้ง(client):
+    assert (await client.get("/api/v1/config")).json()["googleClientId"] is None
+
+
+async def test_config_บอก_client_id_เฉพาะตัวที่เซิร์ฟเวอร์ตรวจได้จริง(client, monkeypatch):
+    """ปุ่มที่กดแล้วล็อกอินไม่ผ่านแย่กว่าไม่มีปุ่ม"""
+    from makthai.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "google_web_client_id", "web.apps.googleusercontent.com")
+
+    # ยังไม่อยู่ในรายการที่ตรวจได้ จึงไม่บอกออกไป
+    monkeypatch.setattr(settings, "google_client_ids", "mobile.apps.googleusercontent.com")
+    assert (await client.get("/api/v1/config")).json()["googleClientId"] is None
+
+    monkeypatch.setattr(
+        settings,
+        "google_client_ids",
+        "mobile.apps.googleusercontent.com,web.apps.googleusercontent.com",
+    )
+    body = (await client.get("/api/v1/config")).json()
+    assert body["googleClientId"] == "web.apps.googleusercontent.com"

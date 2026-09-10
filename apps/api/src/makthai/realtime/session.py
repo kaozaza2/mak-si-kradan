@@ -38,6 +38,9 @@ class Session:
     queued_game: str | None = None
     #: ระดับบอท ถ้าที่นั่งนี้เป็นโปรแกรม
     bot_level: str | None = None
+    #: โหนดที่ถือห้องหรือแมตช์ของคนนี้อยู่ ถ้าไม่ใช่เครื่องนี้
+    #: มีค่าเมื่อไหร่แปลว่าคำสั่งของคนนี้ต้องส่งต่อไปที่นั่น ไม่ใช่ตัดสินใจเอง
+    home: str | None = None
     last_seen: float = field(default_factory=time.monotonic)
 
     @property

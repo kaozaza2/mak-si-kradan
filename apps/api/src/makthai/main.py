@@ -16,10 +16,13 @@ from makthai.auth import resolve_secret
 from makthai.config import get_settings
 from makthai.db.session import create_database
 from makthai.games import registry
+from makthai.mailer import create_mailer
+from makthai.realtime.cluster import create_cluster
 from makthai.realtime.hub import Hub
 from makthai.realtime.match import Match
 from makthai.realtime.ws import serve
 from makthai.services.accounts import Accounts
+from makthai.services.google import GoogleVerifier
 from makthai.services.history import History, MatchOutcome, MatchRecord, SeatRecord
 
 logger = logging.getLogger(__name__)
@@ -79,6 +82,11 @@ class DatabaseSink:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    # uvicorn ตั้ง logging ของตัวเอง ซึ่งไม่ครอบ logger ของเรา ถ้าไม่ตั้งเองรหัส OTP
+    # ที่พิมพ์ลงบันทึกตอนพัฒนาจะไม่โผล่ให้เห็นเลย
+    logging.getLogger("makthai").setLevel(logging.INFO)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO)
     secret, ephemeral = resolve_secret(settings.auth_secret)
     if ephemeral:
         logger.warning(
@@ -96,13 +104,22 @@ def create_app() -> FastAPI:
         public_url=settings.public_url,
         turn_seconds=settings.turn_seconds,
         sink=DatabaseSink(history) if history else None,
+        cluster=create_cluster(settings.redis_url, settings.node_id, settings.cluster_prefix),
     )
+    if hub.cluster is not None:
+        logger.info("เข้าคลัสเตอร์ในชื่อโหนด %s", hub.cluster.node_id)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        if database is not None:
+        if database is not None and settings.auto_create_tables:
+            # สะดวกตอนพัฒนา ส่วน production ใช้ alembic upgrade head แทน
+            # เพราะ create_all ไม่แก้ตารางที่มีอยู่แล้วเมื่อสคีมาเปลี่ยน
             await database.create_all()
+        # ต้องมี event loop แล้วถึงจะต่อ Redis และตั้งงานตามเวลาได้
+        await hub.start()
         yield
+        await hub.stop()
+        await app.state.limiter.close()
         if history is not None:
             # เขียนงานที่ค้างให้จบก่อนปิด ไม่งั้นเทิร์นท้าย ๆ จะหายไปจากประวัติ
             await history.flush()
@@ -129,7 +146,11 @@ def create_app() -> FastAPI:
     app.state.database = database
     app.state.history = history
     app.state.auth_secret = secret
-    app.state.limiter = RateLimiter()
+    app.state.limiter = RateLimiter(settings.redis_url)
+    app.state.mailer = create_mailer(settings)
+    app.state.google = GoogleVerifier(settings.google_client_id_list)
+    if app.state.google.enabled:
+        logger.info("เปิดล็อกอินด้วย Google แล้ว")
 
     @app.websocket("/ws")
     async def websocket_endpoint(socket: WebSocket) -> None:

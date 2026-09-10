@@ -35,10 +35,10 @@ export function App() {
       if (cancelled) return;
       setReady(true);
       store.connect();
-      const config = await api<ClientConfig & { accounts?: boolean }>("/api/v1/config").catch(
-        () => null,
-      );
-      if (!cancelled) await store.loadAccountContext(Boolean(config?.accounts));
+      const config = await api<ClientConfig>("/api/v1/config").catch(() => null);
+      if (!cancelled) {
+        await store.loadAccountContext(Boolean(config?.accounts), config?.googleClientId ?? null);
+      }
       // เข้ามาทางลิงก์เชิญก็เข้าห้องให้เลย
       const invited = location.pathname.match(/^\/join\/([A-Za-z0-9]{4,10})$/);
       if (invited) {

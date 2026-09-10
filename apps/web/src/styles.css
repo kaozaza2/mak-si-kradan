@@ -759,6 +759,64 @@ table.stats td:first-child {
   padding-top: 10px;
 }
 
+/* ปุ่มที่เป็นตัวหนังสือในบรรทัด ไม่ใช่ปุ่มสี่เหลี่ยม */
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+button.link:hover {
+  background: none;
+  color: var(--gold);
+}
+
+.panel.verify {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.panel.verify form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+.panel.verify input {
+  /* รหัสหกหลักอ่านง่ายกว่าเมื่อตัวเลขห่างกัน */
+  letter-spacing: 0.5em;
+  text-align: center;
+  font-size: 1.15rem;
+}
+
+.google-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+  /* จองที่ไว้ก่อน ปุ่มของ Google มาทีหลังจะได้ไม่ดันหน้าเลื่อน */
+  min-height: 44px;
+}
+.google-slot .divider {
+  color: var(--muted);
+  font-size: 0.78rem;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.google-slot .divider::before,
+.google-slot .divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
 .ranks {
   list-style: none;
   margin: 0 0 10px;

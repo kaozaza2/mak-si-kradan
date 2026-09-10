@@ -25,6 +25,13 @@ from makthai.auth import (
 )
 from makthai.domain.registry import GameRegistry
 from makthai.domain.types import EndReason
+from makthai.realtime.cluster import (
+    PEER_TIMEOUT,
+    SNAPSHOT_INTERVAL,
+    Cluster,
+    RemoteConnection,
+    Snapshot,
+)
 from makthai.realtime.match import Match
 from makthai.realtime.room import Room
 from makthai.realtime.scheduler import AsyncioScheduler, Scheduler
@@ -61,6 +68,7 @@ class Hub:
         autopilot_level: str = "normal",
         rng: random.Random | None = None,
         sink: MatchSink | None = None,
+        cluster: Cluster | None = None,
     ) -> None:
         self.registry = registry
         self.auth_secret = auth_secret
@@ -81,6 +89,17 @@ class Hub:
         self.queues: dict[str, list[str]] = {}
         self._autopilot_timers: dict[str, Any] = {}
 
+        # ไม่ใส่ cluster = ทำงานเครื่องเดียว ซึ่งเป็นค่าเริ่มต้นและไม่ต้องพึ่งอะไรเลย
+        self.cluster = cluster
+        #: สำเนาภาพรวมของโหนดอื่น อ่านอย่างเดียว เจ้าของเป็นคนประกาศมาให้
+        self.peers: dict[str, Snapshot] = {}
+        self._announced: dict[str, Any] | None = None
+        if cluster is not None:
+            cluster.subscribe(self._on_envelope)
+            # โหนดที่เพิ่งขึ้นมายังไม่รู้จักใคร ขอภาพรวมจากเพื่อนบ้านทันที
+            # ไม่งั้นคนที่ต่อเข้ามาก่อนรอบประกาศถัดไปจะมองไม่เห็นห้องที่มีอยู่แล้ว
+            cluster.broadcast({"kind": "sync"})
+
     # ── ทางเข้าจาก transport ────────────────────────────────────────────────
 
     def handle(self, connection: Connection, message: Any) -> None:
@@ -99,6 +118,13 @@ class Hub:
             return
         session.last_seen = time.monotonic()
 
+        if session.home:
+            # ชื่ออยู่กับโหนดที่ถือ socket เสมอ แล้วติดไปกับซองทุกใบ
+            if kind == "set_name":
+                session.name = sanitize_name(message.get("name"), session.name)
+            self._forward(session, message)
+            return
+
         handler = getattr(self, f"_on_{kind}", None)
         if handler is None:
             connection.send(
@@ -116,7 +142,14 @@ class Hub:
         session.connections.discard(connection)
         if session.connections:
             return
+        if session.home:
+            # สถานะอยู่อีกเครื่อง ที่นั่นต้องเป็นคนตัดสินใจเรื่องนาฬิกาและ AI คุมแทน
+            self.cluster.publish(session.home, {"kind": "gone", "session": session.id})
+            session.home = None
+        self._went_offline(session)
 
+    def _went_offline(self, session: Session) -> None:
+        """ผู้เล่นไม่มีการเชื่อมต่อเหลือแล้ว ไม่ว่าจะหลุดจากเครื่องนี้หรือจากเครื่องอื่น"""
         session.last_seen = time.monotonic()
         self._leave_queue(session)
         if session.room_id:
@@ -175,7 +208,14 @@ class Hub:
             }
         )
         connection.send(self._lobby_message())
-        self._resume(session, connection)
+
+        home = self._home_of(session.id)
+        if home:
+            # ต่อเข้าเครื่องไหนก็ได้ แล้วเครื่องนั้นพากลับไปหาห้องหรือเกมที่ค้างอยู่เอง
+            session.home = home
+            self.cluster.publish(home, {"kind": "attach", "session": self._identity(session)})
+        else:
+            self._resume(session, connection)
         self._broadcast_lobby()
 
     def _resume(self, session: Session, connection: Connection) -> None:
@@ -238,6 +278,14 @@ class Hub:
                 continue
             open_rooms[room.game_id] = open_rooms.get(room.game_id, 0) + 1
 
+        for peer in self._live_peers():
+            for game_id, count in peer.counts.items():
+                if game_id.startswith("playing:"):
+                    key = game_id.removeprefix("playing:")
+                    playing[key] = playing.get(key, 0) + count
+            for summary in peer.rooms:
+                open_rooms[summary["gameId"]] = open_rooms.get(summary["gameId"], 0) + 1
+
         return [
             {
                 "id": game.id,
@@ -268,6 +316,10 @@ class Hub:
             host = self.sessions.get(room.host_id)
             bots = sum(1 for member in room.members if self._is_bot(member))
             rooms.append(room.summary(host.name if host else "?", bots))
+        for peer in self._live_peers():
+            rooms.extend(
+                summary for summary in peer.rooms if not game_id or summary["gameId"] == game_id
+            )
         return sorted(rooms, key=lambda item: item["createdAt"], reverse=True)
 
     # ── จับคู่อัตโนมัติ ──────────────────────────────────────────────────────
@@ -296,6 +348,7 @@ class Hub:
         session.queued_game = game.id
         queue.append(session.id)
         session.send({"type": "queue", "searching": True, "gameId": game.id})
+        self._claim_remote_opponent(session, game.id)
         self._broadcast_lobby()
 
     def _on_cancel_quick_match(self, session: Session, message: dict[str, Any]) -> None:
@@ -370,6 +423,11 @@ class Hub:
         room = self.rooms.get(room_id) if room_id else None
 
         if room is None:
+            owner = self._node_with_room(raw)
+            if owner is not None:
+                session.home = owner
+                self._forward(session, message)
+                return
             session.send(
                 {"type": "error", "code": "room_not_found", "params": {"code": raw or "-"}}
             )
@@ -1147,7 +1205,9 @@ class Hub:
         for member_id in room.members:
             self._send(member_id, {"type": "room", "room": view})
 
-    def _broadcast_room_list(self) -> None:
+    def _broadcast_room_list(self, announce: bool = True) -> None:
+        if announce:
+            self._announce()
         for session in self.sessions.values():
             if not session.connections or session.busy:
                 continue
@@ -1161,23 +1221,348 @@ class Hub:
             online += 1
             if session.match_id:
                 in_match += 1
+        in_queue = sum(len(queue) for queue in self.queues.values())
+        for peer in self._live_peers():
+            online += peer.counts.get("online", 0)
+            in_match += peer.counts.get("inMatch", 0)
+            in_queue += peer.counts.get("inQueue", 0)
         return {
             "type": "lobby",
             "online": online,
             "inMatch": in_match,
-            "inQueue": sum(len(queue) for queue in self.queues.values()),
+            "inQueue": in_queue,
             "games": self.game_summaries(),
         }
 
-    def _broadcast_lobby(self) -> None:
+    def _broadcast_lobby(self, announce: bool = True) -> None:
+        # announce=False เมื่อกำลังตอบสนองต่อประกาศของโหนดอื่น ไม่งั้นสองโหนด
+        # จะประกาศตอบกันไปมาไม่รู้จบ
+        if announce:
+            self._announce()
         message = self._lobby_message()
         for session in self.sessions.values():
             if session.connections:
                 session.send(message)
 
+    # ── ข้ามเครื่อง ─────────────────────────────────────────────────────────
+    #
+    # ทุกอย่างในส่วนนี้ไม่ทำงานเลยเมื่อไม่ได้ตั้ง cluster ซึ่งเป็นค่าเริ่มต้น
+    # เครื่องเดียวจึงไม่ต้องแบกอะไรเพิ่ม และเทสต์เดิมทั้งหมดยังเดินเส้นทางเดิม
+
+    async def start(self) -> None:
+        """เรียกตอนแอปเริ่ม — ต้องมี event loop แล้วถึงจะตั้งงานตามเวลาได้"""
+        if self.cluster is None:
+            return
+        await self.cluster.start()
+        self._heartbeat()
+
+    async def stop(self) -> None:
+        if self.cluster is not None:
+            self.cluster.broadcast({"kind": "bye"})
+            await self.cluster.stop()
+
+    def _heartbeat(self) -> None:
+        """ประกาศซ้ำเป็นระยะ เผื่อโหนดที่เพิ่งขึ้นมาพลาดรอบก่อน และเก็บกวาดโหนดที่ตายไป"""
+        stale = [
+            node
+            for node, peer in self.peers.items()
+            if time.monotonic() - peer.heard_at > PEER_TIMEOUT
+        ]
+        for node in stale:
+            self._forget_peer(node)
+        self._announce(force=True)
+        self.scheduler.call_later(SNAPSHOT_INTERVAL, self._heartbeat)
+
+    def _identity(self, session: Session) -> dict[str, Any]:
+        return {"id": session.id, "name": session.name, "kind": session.kind}
+
+    def _forward(self, session: Session, message: dict[str, Any]) -> None:
+        """ส่งคำสั่งไปให้โหนดที่ถือห้องหรือแมตช์ของผู้เล่นคนนี้"""
+        self.cluster.publish(
+            session.home,
+            {"kind": "forward", "session": self._identity(session), "message": message},
+        )
+
+    def _live_peers(self) -> list[Snapshot]:
+        return list(self.peers.values())
+
+    def _home_of(self, session_id: str) -> str | None:
+        """โหนดที่ถือห้องหรือแมตช์ของ session นี้อยู่ ถ้าไม่ใช่เครื่องนี้"""
+        for node, peer in self.peers.items():
+            if session_id in peer.homes:
+                return node
+        return None
+
+    def _node_with_room(self, code: str) -> str | None:
+        wanted = code.upper()
+        for node, peer in self.peers.items():
+            if wanted in peer.codes or code in peer.codes.values():
+                return node
+        return None
+
+    def _snapshot(self) -> dict[str, Any]:
+        playing: dict[str, int] = {}
+        for match in self.matches.values():
+            if match.engine.is_active:
+                humans = sum(1 for pid in match.player_ids if not self._is_bot(pid))
+                key = f"playing:{match.game.id}"
+                playing[key] = playing.get(key, 0) + humans
+
+        online = in_match = 0
+        users: list[str] = []
+        homes: list[str] = []
+        for session in self.sessions.values():
+            if session.is_bot:
+                continue
+            if session.busy:
+                homes.append(session.id)
+            if not session.connections:
+                continue
+            online += 1
+            if session.match_id:
+                in_match += 1
+            if session.kind == "user":
+                users.append(session.id)
+
+        rooms = []
+        codes = {}
+        for room in self.rooms.values():
+            if room.visibility == "public" and room.status != "playing" and not room.full:
+                host = self.sessions.get(room.host_id)
+                bots = sum(1 for member in room.members if self._is_bot(member))
+                rooms.append(room.summary(host.name if host else "?", bots))
+            if room.status != "playing":
+                codes[room.code] = room.id
+
+        return Snapshot(
+            node=self.cluster.node_id,
+            users=users,
+            rooms=rooms,
+            codes=codes,
+            queues={
+                game_id: [
+                    self._identity(self.sessions[pid]) for pid in queue if pid in self.sessions
+                ]
+                for game_id, queue in self.queues.items()
+                if queue
+            },
+            homes=homes,
+            counts={
+                "online": online,
+                "inMatch": in_match,
+                "inQueue": sum(len(queue) for queue in self.queues.values()),
+                **playing,
+            },
+        ).as_dict()
+
+    def _announce(self, force: bool = False) -> None:
+        if self.cluster is None:
+            return
+        snapshot = self._snapshot()
+        # ไม่มีอะไรเปลี่ยนก็ไม่ต้องกวนโหนดอื่น
+        if not force and snapshot == self._announced:
+            return
+        self._announced = snapshot
+        self.cluster.broadcast({"kind": "snapshot", "snapshot": snapshot})
+
+    def _forget_peer(self, node: str) -> None:
+        gone = self.peers.pop(node, None)
+        if gone is None:
+            return
+        # โหนดที่ถือห้องของใครอยู่ตายไป คนที่ชี้ไปหามันต้องหลุดออกมาเป็นอิสระ
+        # ไม่งั้นคำสั่งจะถูกส่งไปยังที่ที่ไม่มีใครรับแล้วค้างอยู่อย่างนั้น
+        for session in self.sessions.values():
+            if session.home == node:
+                session.home = None
+                session.send({"type": "error", "code": "server_error"})
+
+    # ── ซองที่มาจากโหนดอื่น ─────────────────────────────────────────────────
+
+    def _on_envelope(self, envelope: dict[str, Any]) -> None:
+        kind = envelope.get("kind")
+        sender = str(envelope.get("from", ""))
+        handler = getattr(self, f"_env_{kind}", None)
+        if handler is None or not sender:
+            return
+        handler(sender, envelope)
+        # ตรวจเฉพาะคนที่ซองใบนี้แตะ ไม่ใช่ไล่ทั้งเครื่อง เพราะทางนี้คือทางเดินของทุกตาเดิน
+        touched = envelope.get("session")
+        if isinstance(touched, dict):
+            touched = touched.get("id")
+        if isinstance(touched, str):
+            self._reap_guest(touched)
+
+    def _env_snapshot(self, sender: str, envelope: dict[str, Any]) -> None:
+        snapshot = Snapshot.from_dict(envelope.get("snapshot") or {})
+        snapshot.heard_at = time.monotonic()
+        previous = self.peers.get(sender)
+        self.peers[sender] = snapshot
+        if previous is not None and previous.as_dict() == snapshot.as_dict():
+            return
+        # ห้องหรือยอดคนของอีกเครื่องเปลี่ยน คนที่นั่งดูหน้ารวมอยู่ที่นี่ต้องเห็นด้วย
+        self._broadcast_lobby(announce=False)
+        self._broadcast_room_list(announce=False)
+
+    def _env_sync(self, sender: str, envelope: dict[str, Any]) -> None:
+        self._announce(force=True)
+
+    def _env_bye(self, sender: str, envelope: dict[str, Any]) -> None:
+        self._forget_peer(sender)
+
+    def _env_forward(self, sender: str, envelope: dict[str, Any]) -> None:
+        """คำสั่งจากผู้เล่นที่ socket อยู่อีกเครื่อง — จัดการเหมือนคนที่ต่ออยู่ที่นี่"""
+        session = self._guest(sender, envelope.get("session") or {})
+        message = envelope.get("message")
+        if session is None or not isinstance(message, dict):
+            return
+        handler = getattr(self, f"_on_{message.get('type')}", None)
+        if handler is None:
+            session.send(
+                {
+                    "type": "error",
+                    "code": "unknown_command",
+                    "params": {"action": message.get("type")},
+                }
+            )
+            return
+        session.last_seen = time.monotonic()
+        handler(session, message)
+
+    def _env_attach(self, sender: str, envelope: dict[str, Any]) -> None:
+        """ผู้เล่นต่อกลับเข้ามาอีกเครื่อง — ย้ายปลายทางแล้วส่งสถานะที่ค้างอยู่ให้ใหม่"""
+        session = self._guest(sender, envelope.get("session") or {})
+        if session is None:
+            return
+        connection = next(iter(session.connections), None)
+        if connection is not None:
+            self._resume(session, connection)
+
+    def _env_gone(self, sender: str, envelope: dict[str, Any]) -> None:
+        session = self.sessions.get(str(envelope.get("session", "")))
+        if session is None:
+            return
+        session.connections.clear()
+        self._went_offline(session)
+
+    def _env_deliver(self, sender: str, envelope: dict[str, Any]) -> None:
+        """ข้อความจากเจ้าของห้อง ส่งต่อลง socket จริงที่เครื่องนี้ถืออยู่"""
+        session = self.sessions.get(str(envelope.get("session", "")))
+        message = envelope.get("message")
+        if session is not None and isinstance(message, dict):
+            session.send(message)
+
+    def _env_close(self, sender: str, envelope: dict[str, Any]) -> None:
+        session = self.sessions.get(str(envelope.get("session", "")))
+        if session is not None:
+            for connection in tuple(session.connections):
+                connection.close()
+
+    def _env_free(self, sender: str, envelope: dict[str, Any]) -> None:
+        """เจ้าของบอกว่าผู้เล่นไม่ได้อยู่ในห้องหรือแมตช์แล้ว ตัดสินใจเองได้ต่อจากนี้"""
+        session = self.sessions.get(str(envelope.get("session", "")))
+        if session is not None and session.home == sender:
+            session.home = None
+
+    def _env_claim(self, sender: str, envelope: dict[str, Any]) -> None:
+        """อีกเครื่องขอจับคู่คนที่รออยู่ในคิวของเรา"""
+        session_id = str(envelope.get("session", ""))
+        game_id = str(envelope.get("game", ""))
+        session = self.sessions.get(session_id)
+        queue = self.queues.get(game_id, [])
+        # ถูกจับคู่ไปแล้วระหว่างทางก็ปฏิเสธ ผู้ขอคนแรกที่มาถึงได้ไป
+        if session is None or session_id not in queue or session.busy or not session.online:
+            self.cluster.publish(sender, {"kind": "claim_no", "session": session_id})
+            return
+        queue.remove(session_id)
+        session.queued_game = None
+        session.home = sender
+        session.send({"type": "queue", "searching": False, "gameId": game_id})
+        self.cluster.publish(
+            sender,
+            {"kind": "claim_ok", "session": self._identity(session), "game": game_id},
+        )
+        self._broadcast_lobby()
+
+    def _env_claim_ok(self, sender: str, envelope: dict[str, Any]) -> None:
+        info = envelope.get("session") or {}
+        game_id = str(envelope.get("game", ""))
+        waiting = self._next_in_queue(game_id)
+        guest = self._guest(sender, info)
+        if guest is None:
+            return
+        if waiting is None:
+            # คนของเราถูกจับคู่ไปทางอื่นก่อน ปล่อยคนที่เพิ่งได้มากลับไปเข้าคิวใหม่
+            self._release(guest)
+            return
+        self._leave_queue(waiting)
+        waiting.send({"type": "queue", "searching": False, "gameId": game_id})
+        self.start_match([guest.id, waiting.id], game_id, source="quick")
+
+    def _env_claim_no(self, sender: str, envelope: dict[str, Any]) -> None:
+        return None
+
+    # ── ผู้เล่นข้ามเครื่องที่เครื่องนี้ถือสถานะให้ ────────────────────────────
+
+    def _guest(self, edge: str, info: dict[str, Any]) -> Session | None:
+        """หา session ของผู้เล่นที่ socket อยู่เครื่อง edge สร้างใหม่ถ้ายังไม่มี"""
+        session_id = str(info.get("id", ""))
+        if not session_id:
+            return None
+        session = self.sessions.get(session_id)
+        if session is None:
+            session = Session(
+                id=session_id,
+                name=str(info.get("name", "")),
+                kind=str(info.get("kind", "guest")),
+            )
+            self.sessions[session_id] = session
+        else:
+            # ชื่ออยู่กับเครื่องที่ถือ socket เสมอ อันที่ติดมากับซองจึงใหม่กว่าเสมอ
+            session.name = str(info.get("name", session.name))
+        connection = next(iter(session.connections), None)
+        if not isinstance(connection, RemoteConnection) or connection.edge != edge:
+            for old in tuple(session.connections):
+                session.connections.discard(old)
+            session.connections.add(RemoteConnection(self.cluster, edge, session_id))
+        return session
+
+    def _reap_guest(self, session_id: str) -> None:
+        """คืนอิสระให้ผู้เล่นข้ามเครื่องที่ไม่ได้อยู่ในห้องหรือแมตช์แล้ว"""
+        session = self.sessions.get(session_id)
+        if session is None or session.busy:
+            return
+        if isinstance(next(iter(session.connections), None), RemoteConnection):
+            self._release(session)
+
+    def _release(self, session: Session) -> None:
+        connection = next(iter(session.connections), None)
+        if isinstance(connection, RemoteConnection):
+            self.cluster.publish(connection.edge, {"kind": "free", "session": session.id})
+        self.sessions.pop(session.id, None)
+
+    def _claim_remote_opponent(self, session: Session, game_id: str) -> None:
+        """ไม่มีใครรออยู่ที่เครื่องนี้ ลองขอคนที่รออยู่เครื่องอื่น"""
+        if self.cluster is None:
+            return
+        for node, peer in self.peers.items():
+            for entry in peer.queues.get(game_id, []):
+                if entry.get("id") != session.id:
+                    self.cluster.publish(
+                        node, {"kind": "claim", "session": entry["id"], "game": game_id}
+                    )
+                    return
+
+    def _next_in_queue(self, game_id: str) -> Session | None:
+        for session_id in self.queues.get(game_id, []):
+            session = self.sessions.get(session_id)
+            if session is not None and session.online and not session.busy:
+                return session
+        return None
+
     def online_ids(self, ids: set[str]) -> set[str]:
-        """ใครในรายชื่อนี้กำลังต่ออยู่ — ใช้แสดงสถานะเพื่อน"""
-        return {player_id for player_id in ids if self._is_connected(player_id)}
+        """ใครในรายชื่อนี้กำลังต่ออยู่ — ใช้แสดงสถานะเพื่อน นับทั้งคลัสเตอร์"""
+        elsewhere = {user for peer in self._live_peers() for user in peer.users}
+        return {pid for pid in ids if self._is_connected(pid) or pid in elsewhere}
 
     @property
     def stats(self) -> dict[str, int]:
@@ -1186,6 +1571,7 @@ class Hub:
             "rooms": len(self.rooms),
             "matches": len(self.matches),
             "queue": sum(len(queue) for queue in self.queues.values()),
+            "peers": len(self._live_peers()),
         }
 
 

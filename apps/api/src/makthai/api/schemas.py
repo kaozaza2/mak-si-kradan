@@ -40,6 +40,8 @@ class ConfigResponse(BaseModel):
     games: list[str]
     #: เปิดระบบบัญชีผู้ใช้หรือไม่ — ปิดเมื่อไม่ได้ต่อฐานข้อมูล
     accounts: bool = False
+    #: client id ฝั่งเว็บ ใช้เริ่มปุ่ม Google — ไม่ตั้งคือไม่แสดงปุ่ม
+    google_client_id: str | None = Field(default=None, serialization_alias="googleClientId")
 
     model_config = {"populate_by_name": True}
 

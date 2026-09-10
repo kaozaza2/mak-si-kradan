@@ -13,11 +13,20 @@ export interface AccountUser {
   username: string | null;
   email: string | null;
   verified: boolean;
+  /** ผูกกับบัญชี Google แล้ว — ตั้งรหัสผ่านเองอาจยังไม่มี */
+  google?: boolean;
   rating: number;
   gamesPlayed: number;
   wins: number;
   losses: number;
   draws: number;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: AccountUser;
+  /** สมัครด้วยอีเมลใหม่ ยังต้องกรอกรหัสหกหลักก่อนถึงจะนับอันดับ */
+  verificationRequired?: boolean;
 }
 
 export interface FriendSummary {

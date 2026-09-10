@@ -22,10 +22,35 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./mak-thai.db"
     #: ไม่ตั้ง = ทำงานแบบ node เดียว
     redis_url: str = ""
+    #: ชื่อโหนดในคลัสเตอร์ — ไม่ตั้งก็สุ่มให้ตอนเริ่ม
+    node_id: str = ""
+    #: แยกวงคุยเมื่อหลายสภาพแวดล้อมใช้ Redis ตัวเดียวกัน
+    cluster_prefix: str = "makthai"
+    #: สร้างตารางเองตอนเริ่มแอป — สะดวกตอนพัฒนา แต่ production ควรใช้ migration
+    auto_create_tables: bool = True
 
     #: ใช้เซ็น token ของทั้ง guest และบัญชีที่สมัคร ทุก node ต้องใช้ค่าเดียวกัน
     auth_secret: str = ""
     turn_seconds: int = 45
+
+    #: ไม่ตั้งทั้ง smtp และ webhook = พิมพ์รหัสยืนยันลงบันทึกให้เห็นตอนพัฒนา
+    mail_webhook_url: str = ""
+    mail_webhook_token: str = ""
+    mail_from: str = "หมากไทย <no-reply@mak-thai.local>"
+    #: ตั้ง smtp_host เมื่อไหร่จะใช้ SMTP แทน webhook — กล่องจดหมายทดสอบก็ทางนี้
+    smtp_host: str = ""
+    smtp_port: int = 1025
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_start_tls: bool = False
+    #: client id ทุกตัวที่ใช้ คั่นด้วยจุลภาค (เว็บ ไอโอเอส แอนดรอยด์)
+    google_client_ids: str = ""
+    #: client id ของฝั่งเว็บ ใช้เริ่ม Google Identity Services ในเบราว์เซอร์
+    google_web_client_id: str = ""
+
+    @property
+    def google_client_id_list(self) -> list[str]:
+        return [value.strip() for value in self.google_client_ids.split(",") if value.strip()]
 
     @property
     def allowed_origins(self) -> list[str]:

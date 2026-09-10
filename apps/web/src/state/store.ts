@@ -15,6 +15,7 @@ import {
   post,
   setAuthToken,
   type AccountUser,
+  type AuthResponse,
   type FriendListing,
 } from "../api/rest";
 import { GameSocket } from "../api/socket";
@@ -27,7 +28,7 @@ import type {
   RoomView,
   ServerMessage,
 } from "../api/types";
-import { t } from "../i18n/messages";
+import { preferredLocale, t } from "../i18n/messages";
 
 export interface Toast {
   id: number;
@@ -55,6 +56,17 @@ export interface AppState {
   /** true เมื่อเซิร์ฟเวอร์เปิดระบบบัญชี (ต่อฐานข้อมูลไว้) */
   accountsEnabled: boolean;
   account: AccountUser | null;
+  /** client id ฝั่งเว็บของ Google — ไม่มีคือเซิร์ฟเวอร์ยังไม่ได้เปิดใช้ */
+  googleClientId: string | null;
+  /** อีเมลที่กำลังรอรหัสยืนยัน — มีค่าเมื่อไหร่หน้าเว็บจะขึ้นช่องกรอกรหัส */
+  pendingVerification: string | null;
+  /**
+   * ขั้นของการตั้งรหัสผ่านใหม่
+   *
+   * "ask" คือถามอีเมล "code" คือกรอกรหัสกับรหัสผ่านใหม่ แยกจาก pendingVerification
+   * เพราะคนที่ลืมรหัสผ่านยังไม่ได้ล็อกอิน จะใช้สถานะเดียวกันไม่ได้
+   */
+  passwordReset: { step: "ask" | "code"; email: string } | null;
   friends: FriendListing;
   leaderboard: LeaderboardRow[];
   session: { id: string; name: string; kind: string } | null;
@@ -77,6 +89,9 @@ const initial: AppState = {
   connected: false,
   accountsEnabled: false,
   account: null,
+  googleClientId: null,
+  pendingVerification: null,
+  passwordReset: null,
   friends: { friends: [], incoming: [], outgoing: [] },
   leaderboard: [],
   session: null,
@@ -111,8 +126,11 @@ export class Store {
 
   // ── บัญชีผู้ใช้ ───────────────────────────────────────────────────────────
 
-  async loadAccountContext(accountsEnabled: boolean): Promise<void> {
-    this.set({ accountsEnabled });
+  async loadAccountContext(
+    accountsEnabled: boolean,
+    googleClientId: string | null = null,
+  ): Promise<void> {
+    this.set({ accountsEnabled, googleClientId });
     if (!accountsEnabled) return;
     await this.refreshAccount();
     await this.refreshLeaderboard();
@@ -152,13 +170,100 @@ export class Store {
   /** สมัครหรือล็อกอิน แล้วต่อใหม่เพื่อให้ตัวตนฝั่งเซิร์ฟเวอร์ผูกกับบัญชีนี้ */
   async authenticate(path: string, body: Record<string, unknown>): Promise<string | null> {
     try {
-      const result = await post<{ token: string; user: AccountUser }>(path, body);
-      setAuthToken(result.token);
-      GameSocket.rememberToken(result.token);
-      this.set({ account: result.user });
-      await Promise.all([this.refreshFriends(), this.refreshLeaderboard()]);
-      this.socket.reconnect();
-      this.toast(t("welcome_back", { name: result.user.name }));
+      const result = await post<AuthResponse>(path, body);
+      await this.acceptAuth(result);
+      return null;
+    } catch (error) {
+      return error instanceof ApiError ? error.code : "server_error";
+    }
+  }
+
+  /**
+   * รับผลการล็อกอินไม่ว่ามาทางไหน
+   *
+   * เซิร์ฟเวอร์ให้โทเคนตั้งแต่ยังไม่ยืนยันอีเมล เพราะเข้าไปเล่นได้เลย แค่ยังไม่นับ
+   * อันดับ หน้าเว็บจึงเก็บโทเคนไว้ก่อนแล้วค่อยชวนให้ยืนยันทีหลัง
+   */
+  private async acceptAuth(result: AuthResponse): Promise<void> {
+    setAuthToken(result.token);
+    GameSocket.rememberToken(result.token);
+    this.set({
+      account: result.user,
+      pendingVerification: result.verificationRequired ? result.user.email : null,
+    });
+    await Promise.all([this.refreshFriends(), this.refreshLeaderboard()]);
+    this.socket.reconnect();
+    if (result.verificationRequired) this.toast(t("verification_sent"));
+    else this.toast(t("welcome_back", { name: result.user.name }));
+  }
+
+  /** เปิดช่องกรอกรหัสอีกครั้ง สำหรับคนที่ปิดไปแล้วแต่ยังไม่ได้ยืนยัน */
+  startVerification(email: string): void {
+    this.set({ pendingVerification: email });
+  }
+
+  dismissVerification(): void {
+    this.set({ pendingVerification: null });
+  }
+
+  async verifyOtp(email: string, code: string): Promise<string | null> {
+    try {
+      await this.acceptAuth(await post<AuthResponse>("/api/v1/auth/verify-otp", { email, code }));
+      this.set({ pendingVerification: null });
+      return null;
+    } catch (error) {
+      return error instanceof ApiError ? error.code : "server_error";
+    }
+  }
+
+  async resendOtp(email: string): Promise<string | null> {
+    try {
+      await post("/api/v1/auth/resend-otp", { email, locale: preferredLocale() });
+      this.toast(t("otp_sent"));
+      return null;
+    } catch (error) {
+      return error instanceof ApiError ? error.code : "server_error";
+    }
+  }
+
+  startPasswordReset(email = ""): void {
+    this.set({ passwordReset: { step: "ask", email } });
+  }
+
+  cancelPasswordReset(): void {
+    this.set({ passwordReset: null });
+  }
+
+  /** ขอรหัสตั้งรหัสผ่านใหม่ — เซิร์ฟเวอร์ตอบเหมือนกันเสมอ ไม่ว่าอีเมลนั้นมีบัญชีไหม */
+  async forgotPassword(email: string): Promise<string | null> {
+    try {
+      await post("/api/v1/auth/forgot-password", { email, locale: preferredLocale() });
+      this.set({ passwordReset: { step: "code", email } });
+      this.toast(t("otp_sent"));
+      return null;
+    } catch (error) {
+      return error instanceof ApiError ? error.code : "server_error";
+    }
+  }
+
+  async resetPassword(email: string, code: string, password: string): Promise<string | null> {
+    try {
+      const result = await post<AuthResponse>("/api/v1/auth/reset-password", {
+        email,
+        code,
+        password,
+      });
+      this.set({ passwordReset: null });
+      await this.acceptAuth(result);
+      return null;
+    } catch (error) {
+      return error instanceof ApiError ? error.code : "server_error";
+    }
+  }
+
+  async signInWithGoogle(idToken: string): Promise<string | null> {
+    try {
+      await this.acceptAuth(await post<AuthResponse>("/api/v1/auth/google", { idToken }));
       return null;
     } catch (error) {
       return error instanceof ApiError ? error.code : "server_error";
@@ -168,7 +273,12 @@ export class Store {
   signOut(): void {
     clearAuthToken();
     GameSocket.clearIdentity();
-    this.set({ account: null, friends: initial.friends });
+    this.set({
+      account: null,
+      friends: initial.friends,
+      pendingVerification: null,
+      passwordReset: null,
+    });
     this.socket.reconnect();
   }
 

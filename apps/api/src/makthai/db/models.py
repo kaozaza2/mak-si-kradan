@@ -37,6 +37,8 @@ class Player(Base):
     email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    #: sub ของบัญชี Google ที่ผูกไว้
+    google_id: Mapped[str | None] = mapped_column(String(64), unique=True, default=None)
     #: argon2id — ไม่เคยเก็บรหัสผ่านดิบ
     password_hash: Mapped[str | None] = mapped_column(Text, default=None)
 
@@ -172,3 +174,25 @@ class Friendship(Base):
         UniqueConstraint("requester_id", "addressee_id", name="uq_friend_pair"),
         Index("ix_friendships_addressee", "addressee_id", "status"),
     )
+
+
+class OtpCode(Base):
+    """รหัสยืนยันอีเมล เก็บเฉพาะแฮช ไม่เคยเก็บรหัสดิบ
+
+    รหัสหกหลักเดาได้หนึ่งในล้าน ซึ่งไม่พอถ้าปล่อยให้ยิงรัว การป้องกันจริงจึงอยู่ที่
+    จำกัดจำนวนครั้งที่กรอกผิดและให้รหัสหมดอายุเร็ว
+    """
+
+    __tablename__ = "otp_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(254))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    purpose: Mapped[str] = mapped_column(String(32), default="verify_email")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    #: นับครั้งที่กรอกผิด กันการเดารหัสด้วยการยิงรัว
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_otp_lookup", "email", "purpose"),)
