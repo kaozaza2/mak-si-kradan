@@ -1,6 +1,17 @@
+# โค้ด prototype ชุดเดิม เก็บไว้อ้างอิงในเครื่องเท่านั้น
+.legacy/
+
 node_modules/
+dist/
+build/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 *.log
 .DS_Store
 .env
-prisma/dev.db
-prisma/dev.db-journal
+.env.*
+!.env.example

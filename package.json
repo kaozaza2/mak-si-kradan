@@ -1,28 +1,13 @@
 {
-  "name": "mak-si-kradan",
-  "version": "0.1.0",
-  "devDependencies": {
-    "@types/bun": "^1.4.2",
-    "happy-dom": "^20.14.0",
-    "prisma": "6.19.3",
-    "typescript": "^7.0.2"
-  },
-  "description": "หมากสี่กระดาน — เกมกระดานออนไลน์ 2 ผู้เล่นบนกระดานกลางที่หมากไม่มีเจ้าของ",
+  "name": "mak-thai",
   "private": true,
-  "scripts": {
-    "dev": "bun --watch src/server/index.ts",
-    "start": "bun src/server/index.ts",
-    "test": "bun test",
-    "test:e2e": "bun scripts/e2e.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "db:push": "prisma db push",
-    "db:generate": "prisma generate",
-    "db:studio": "prisma studio",
-    "db:init": "bun scripts/init-db.ts",
-    "db:sql": "prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/init.sql"
-  },
   "type": "module",
-  "dependencies": {
-    "@prisma/client": "6.19.3"
+  "scripts": {
+    "dev": "pnpm --filter @mak-thai/web dev",
+    "build": "pnpm --filter @mak-thai/web build",
+    "test:web": "pnpm --filter @mak-thai/web test",
+    "api": "cd apps/api && uv run uvicorn makthai.main:app --reload",
+    "api:test": "cd apps/api && uv run pytest",
+    "api:lint": "cd apps/api && uv run ruff check . && uv run ruff format --check ."
   }
 }
