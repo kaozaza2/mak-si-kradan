@@ -38,6 +38,8 @@ class ConfigResponse(BaseModel):
     locales: list[str]
     default_locale: str = Field(serialization_alias="defaultLocale")
     games: list[str]
+    #: เปิดระบบบัญชีผู้ใช้หรือไม่ — ปิดเมื่อไม่ได้ต่อฐานข้อมูล
+    accounts: bool = False
 
     model_config = {"populate_by_name": True}
 

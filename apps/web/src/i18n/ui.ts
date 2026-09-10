@@ -107,6 +107,48 @@ const UI: Dictionary = {
   inviteTitle: { th: "{name} ชวนคุณเข้าห้อง", en: "{name} invited you to a room" },
   later: { th: "ไว้ก่อน", en: "Later" },
   howToPlay: { th: "วิธีเล่น", en: "How to play" },
+
+  signInPrompt: {
+    th: "มีบัญชีแล้ว หรืออยากเก็บอันดับ? เข้าสู่ระบบ / สมัคร",
+    en: "Have an account, or want a ranking? Sign in or sign up",
+  },
+  emailOrUsername: { th: "อีเมลหรือชื่อผู้ใช้", en: "Email or username" },
+  password: { th: "รหัสผ่าน", en: "Password" },
+  signIn: { th: "เข้าสู่ระบบ", en: "Sign in" },
+  signUp: { th: "สมัครใหม่", en: "Sign up" },
+  signOut: { th: "ออกจากระบบ", en: "Sign out" },
+  record: {
+    th: "ชนะ {wins} · แพ้ {losses} · เสมอ {draws} · เล่นแล้ว {games} เกม",
+    en: "{wins}W · {losses}L · {draws}D · {games} games",
+  },
+  unverifiedNote: {
+    th: "ยังไม่ได้ยืนยันอีเมล เกมของคุณจะยังไม่นับอันดับ",
+    en: "Email not verified yet, so your games will not count towards ranking",
+  },
+
+  leaderboard: { th: "อันดับผู้เล่น", en: "Leaderboard" },
+  noRanked: {
+    th: "ยังไม่มีใครติดอันดับ เล่นแมตช์ที่ทุกคนล็อกอินเพื่อเก็บอันดับ",
+    en: "Nobody ranked yet — play a match where everyone is signed in",
+  },
+  rankedNote: {
+    th: "นับเฉพาะแมตช์ที่ทุกที่นั่งเป็นบัญชีที่ยืนยันแล้ว ไม่นับเกมที่มีบอทหรือผู้เล่นชั่วคราว",
+    en: "Only matches where every seat is a verified account count — not games with bots or guests",
+  },
+
+  friends: { th: "เพื่อน", en: "Friends" },
+  addFriend: { th: "เพิ่มเพื่อน", en: "Add a friend" },
+  friendIdentifier: { th: "ชื่อผู้ใช้หรืออีเมลของเพื่อน", en: "Friend's username or email" },
+  add: { th: "เพิ่ม", en: "Add" },
+  friendRequest: { th: "คำขอเป็นเพื่อน", en: "Friend request" },
+  decline: { th: "ปฏิเสธ", en: "Decline" },
+  awaitingReply: { th: "รอตอบรับ", en: "Awaiting reply" },
+  noFriends: {
+    th: "ยังไม่มีเพื่อน เพิ่มด้วยชื่อผู้ใช้หรืออีเมลด้านบน",
+    en: "No friends yet — add one with their username or email above",
+  },
+  inviteToRoom: { th: "ชวนเข้าห้อง", en: "Invite to room" },
+  remove: { th: "ลบ", en: "Remove" },
 };
 
 export function ui(key: keyof typeof UI | string, params: Record<string, string | number> = {}): string {

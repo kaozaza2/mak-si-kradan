@@ -12,7 +12,7 @@ from __future__ import annotations
 import random
 import time
 import uuid
-from typing import Any
+from typing import Any, Protocol
 
 from makthai.auth import (
     Identity,
@@ -33,6 +33,20 @@ from makthai.realtime.session import Connection, Session
 PROTOCOL_VERSION = 1
 
 
+class MatchSink(Protocol):
+    """ที่รับผลการเล่นไปเก็บ
+
+    hub ไม่รู้จักฐานข้อมูล มันแค่บอกว่าเกิดอะไรขึ้น ส่วนจะเก็บหรือไม่เก็บเป็นเรื่องของ
+    ผู้เรียก และการเก็บต้องไม่มีวันทำให้เกมสะดุด
+    """
+
+    def match_started(self, match: Match, seats: list[dict[str, Any]]) -> None: ...
+
+    def turns_played(self, match: Match, turns: list[dict[str, Any]]) -> None: ...
+
+    def match_finished(self, match: Match, outcome: dict[str, Any]) -> None: ...
+
+
 class Hub:
     def __init__(
         self,
@@ -46,6 +60,7 @@ class Hub:
         autopilot_grace: float = 15.0,
         autopilot_level: str = "normal",
         rng: random.Random | None = None,
+        sink: MatchSink | None = None,
     ) -> None:
         self.registry = registry
         self.auth_secret = auth_secret
@@ -56,6 +71,8 @@ class Hub:
         self.autopilot_grace = autopilot_grace
         self.autopilot_level = autopilot_level
         self._rng = rng or random.Random()
+        # ที่บันทึกประวัติ — ไม่ใส่ก็เล่นได้ครบ แค่ไม่เก็บอะไรไว้
+        self.sink = sink
 
         self.sessions: dict[str, Session] = {}
         self.rooms: dict[str, Room] = {}
@@ -602,6 +619,21 @@ class Hub:
             self._leave_queue(session)
             session.send(self._match_start_message(match, seat))
 
+        if self.sink is not None:
+            self.sink.match_started(
+                match,
+                [
+                    {
+                        "seat": seat_index,
+                        "playerId": player_id,
+                        "name": ((session := self.sessions.get(player_id)) and session.name) or "",
+                        "isBot": bool(session and session.is_bot),
+                        "botLevel": session.bot_level if session else None,
+                    }
+                    for seat_index, player_id in enumerate(seats)
+                ],
+            )
+
         match.arm_clock(self.scheduler, lambda: self._on_turn_timeout(match))
         self._broadcast_state(match)
         first = self.sessions.get(seats[0])
@@ -828,10 +860,39 @@ class Hub:
         self._enable_autopilot(match, seat)
         match.arm_clock(self.scheduler, lambda: self._on_turn_timeout(match))
 
+    def _persist_new_turns(self, match: Match) -> None:
+        """ส่งเฉพาะเทิร์นที่ยังไม่เคยส่ง กันบันทึกซ้ำ"""
+        if self.sink is None:
+            return
+        history = match.engine.view().get("history")
+        if history is None:
+            # เกมที่ไม่เปิดเผยประวัติทั้งก้อน ใช้เทิร์นล่าสุดแทน
+            last = match.engine.view().get("lastTurn")
+            if last and last.get("turn", 0) > match.persisted_turns:
+                match.persisted_turns = int(last["turn"])
+                self.sink.turns_played(match, [last])
+            return
+        fresh = history[match.persisted_turns :]
+        if fresh:
+            match.persisted_turns = len(history)
+            self.sink.turns_played(match, fresh)
+
     def _finish_match(self, match: Match) -> None:
         match.clear_clock()
         match.clear_bot()
         self._broadcast_state(match)
+        result = match.engine.result
+        if self.sink is not None and result is not None:
+            self.sink.match_finished(
+                match,
+                {
+                    "reason": result.reason.value,
+                    "scores": list(result.scores),
+                    "winners": list(result.winners),
+                    "retired": list(match.engine.retired),
+                    "turns": match.persisted_turns,
+                },
+            )
         for player_id in match.player_ids:
             self._send_match_end(match, player_id)
         self._broadcast_lobby()
@@ -1053,6 +1114,7 @@ class Hub:
         state = self._state_view(match)
         for player_id in match.player_ids:
             self._send(player_id, {"type": "state", "state": state})
+        self._persist_new_turns(match)
         # ทุกครั้งที่สถานะเปลี่ยน ถ้าถึงตาบอทก็ให้มันเดินต่อจากตรงนี้
         self._maybe_move_bot(match)
 
@@ -1112,6 +1174,10 @@ class Hub:
         for session in self.sessions.values():
             if session.connections:
                 session.send(message)
+
+    def online_ids(self, ids: set[str]) -> set[str]:
+        """ใครในรายชื่อนี้กำลังต่ออยู่ — ใช้แสดงสถานะเพื่อน"""
+        return {player_id for player_id in ids if self._is_connected(player_id)}
 
     @property
     def stats(self) -> dict[str, int]:

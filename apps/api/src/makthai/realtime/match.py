@@ -41,6 +41,8 @@ class Match:
     #: ต่างจากการยอมแพ้ตรงที่เจ้าของยังเป็นเจ้าของคะแนน และกลับมาคุมเองได้ทุกเมื่อ
     autopilot: dict[int, str] = field(default_factory=dict)
 
+    #: จำนวนเทิร์นที่บันทึกลงประวัติไปแล้ว กันบันทึกซ้ำ
+    persisted_turns: int = 0
     deadline: float | None = None
     _clock: TimerHandle | None = None
     _bot_timer: TimerHandle | None = None

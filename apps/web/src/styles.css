@@ -723,3 +723,101 @@ table.stats td:first-child {
     transform: translateY(-6px);
   }
 }
+
+/* ── แผงด้านข้าง: บัญชี เพื่อน อันดับ ───────────────────────────────────── */
+.side-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.account {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.account .rating {
+  color: var(--gold);
+  font-weight: 800;
+  margin-left: 8px;
+}
+.account .meta,
+.friend-row .meta,
+.ranks .meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.account-form summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+.account-form form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.ranks {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ranks li {
+  display: grid;
+  grid-template-columns: 2.2em 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #191430;
+  border: 1px solid var(--line);
+  font-size: 0.88rem;
+}
+.ranks li.me {
+  border-color: var(--accent);
+}
+.ranks .rank {
+  color: var(--muted);
+}
+.ranks .points {
+  color: var(--gold);
+  font-weight: 700;
+}
+
+.friend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-top: 8px;
+  border-radius: 10px;
+  background: #191430;
+  border: 1px solid var(--line);
+  font-size: 0.88rem;
+}
+.friend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.friend .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3a4256;
+  flex: 0 0 auto;
+}
+.friend .dot.online {
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(53, 196, 106, 0.6);
+}
+.request-label {
+  font-size: 0.75rem;
+  color: var(--accent);
+}

@@ -7,6 +7,16 @@
  */
 
 import { useSyncExternalStore } from "react";
+import {
+  ApiError,
+  api,
+  authToken,
+  clearAuthToken,
+  post,
+  setAuthToken,
+  type AccountUser,
+  type FriendListing,
+} from "../api/rest";
 import { GameSocket } from "../api/socket";
 import type {
   GameSummary,
@@ -36,8 +46,17 @@ export interface RoomInvite {
   turnSeconds: number;
 }
 
+export interface LeaderboardRow extends AccountUser {
+  rank: number;
+}
+
 export interface AppState {
   connected: boolean;
+  /** true เมื่อเซิร์ฟเวอร์เปิดระบบบัญชี (ต่อฐานข้อมูลไว้) */
+  accountsEnabled: boolean;
+  account: AccountUser | null;
+  friends: FriendListing;
+  leaderboard: LeaderboardRow[];
   session: { id: string; name: string; kind: string } | null;
   games: GameSummary[];
   rooms: RoomSummary[];
@@ -56,6 +75,10 @@ export interface AppState {
 
 const initial: AppState = {
   connected: false,
+  accountsEnabled: false,
+  account: null,
+  friends: { friends: [], incoming: [], outgoing: [] },
+  leaderboard: [],
   session: null,
   games: [],
   rooms: [],
@@ -84,6 +107,91 @@ export class Store {
 
   connect(): void {
     this.socket.connect();
+  }
+
+  // ── บัญชีผู้ใช้ ───────────────────────────────────────────────────────────
+
+  async loadAccountContext(accountsEnabled: boolean): Promise<void> {
+    this.set({ accountsEnabled });
+    if (!accountsEnabled) return;
+    await this.refreshAccount();
+    await this.refreshLeaderboard();
+  }
+
+  async refreshAccount(): Promise<void> {
+    if (!authToken()) return;
+    try {
+      const body = await api<{ user: AccountUser }>("/api/v1/me");
+      this.set({ account: body.user });
+      await this.refreshFriends();
+    } catch {
+      // โทเคนหมดอายุหรือซีเคร็ตเปลี่ยน กลับไปเป็นผู้เล่นชั่วคราวเงียบ ๆ
+      clearAuthToken();
+      this.set({ account: null });
+    }
+  }
+
+  async refreshLeaderboard(): Promise<void> {
+    try {
+      const body = await api<{ leaderboard: LeaderboardRow[] }>("/api/v1/leaderboard?limit=20");
+      this.set({ leaderboard: body.leaderboard });
+    } catch {
+      this.set({ leaderboard: [] });
+    }
+  }
+
+  async refreshFriends(): Promise<void> {
+    if (!this.state.account) return;
+    try {
+      this.set({ friends: await api<FriendListing>("/api/v1/friends") });
+    } catch {
+      /* ไม่เป็นไร แสดงรายการเดิมไปก่อน */
+    }
+  }
+
+  /** สมัครหรือล็อกอิน แล้วต่อใหม่เพื่อให้ตัวตนฝั่งเซิร์ฟเวอร์ผูกกับบัญชีนี้ */
+  async authenticate(path: string, body: Record<string, unknown>): Promise<string | null> {
+    try {
+      const result = await post<{ token: string; user: AccountUser }>(path, body);
+      setAuthToken(result.token);
+      GameSocket.rememberToken(result.token);
+      this.set({ account: result.user });
+      await Promise.all([this.refreshFriends(), this.refreshLeaderboard()]);
+      this.socket.reconnect();
+      this.toast(t("welcome_back", { name: result.user.name }));
+      return null;
+    } catch (error) {
+      return error instanceof ApiError ? error.code : "server_error";
+    }
+  }
+
+  signOut(): void {
+    clearAuthToken();
+    GameSocket.clearIdentity();
+    this.set({ account: null, friends: initial.friends });
+    this.socket.reconnect();
+  }
+
+  async requestFriend(identifier: string): Promise<void> {
+    try {
+      await post("/api/v1/friends/request", { identifier });
+      await this.refreshFriends();
+    } catch (error) {
+      this.toast(t(error instanceof ApiError ? error.code : "server_error"), "error");
+    }
+  }
+
+  async respondFriend(requestId: number, accept: boolean): Promise<void> {
+    try {
+      await post("/api/v1/friends/respond", { requestId, accept });
+    } finally {
+      await this.refreshFriends();
+    }
+  }
+
+  async removeFriend(playerId: string): Promise<void> {
+    await post("/api/v1/friends/remove", { playerId }).catch(() => undefined);
+    await this.refreshFriends();
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -166,6 +274,9 @@ export class Store {
         break;
       case "match_end":
         this.set({ result: message });
+        // เรตติ้งอาจเปลี่ยนถ้าแมตช์นี้นับอันดับ
+        void this.refreshAccount();
+        void this.refreshLeaderboard();
         break;
       case "rematch_status":
         this.set({ rematchRequested: message.requested });
@@ -244,6 +355,10 @@ export class Store {
 
   startRoom(): void {
     this.socket.send({ type: "start_room" });
+  }
+
+  inviteToRoom(targetId: string): void {
+    this.socket.send({ type: "invite_to_room", targetId });
   }
 
   addBot(level: string): void {

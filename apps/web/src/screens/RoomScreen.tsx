@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { RoomView } from "../api/types";
 import { gameName, playerName } from "../i18n/messages";
 import { modeName, ui } from "../i18n/ui";
+import { FriendsPanel } from "../components/SocialPanels";
 import { store, useAppState } from "../state/store";
 
 /** ห้องรอเล่น — ที่นั่ง รหัสห้อง และปุ่มเริ่ม */
@@ -96,6 +97,10 @@ export function RoomScreen({ room }: { room: RoomView }) {
           <button className="ghost" onClick={() => store.leaveRoom()}>
             {ui("leaveRoom")}
           </button>
+        </div>
+
+        <div style={{ textAlign: "left", width: "100%" }}>
+          <FriendsPanel />
         </div>
       </div>
     </div>

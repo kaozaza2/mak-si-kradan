@@ -1,5 +1,7 @@
 import { ui } from "../i18n/ui";
 import { store, useAppState } from "../state/store";
+import { AccountPanel } from "../components/AccountPanel";
+import { FriendsPanel, Leaderboard } from "../components/SocialPanels";
 import { GameCard, RoomList } from "../components/common";
 
 /** หน้ารวมของแพลตฟอร์ม — เลือกเกม หรือกระโดดเข้าห้องที่เปิดอยู่ */
@@ -31,16 +33,21 @@ export function Portal() {
           </div>
         </section>
 
-        <aside className="panel">
-          <div className="panel-head">
-            <h2 className="section-title">
-              {ui("openRooms")} ({rooms.length})
-            </h2>
-            <button className="ghost small" onClick={() => store.refreshRooms()}>
-              {ui("refresh")}
-            </button>
-          </div>
-          <RoomList rooms={rooms} showGame />
+        <aside className="side-stack">
+          <AccountPanel />
+          <section className="panel">
+            <div className="panel-head">
+              <h2 className="section-title">
+                {ui("openRooms")} ({rooms.length})
+              </h2>
+              <button className="ghost small" onClick={() => store.refreshRooms()}>
+                {ui("refresh")}
+              </button>
+            </div>
+            <RoomList rooms={rooms} showGame />
+          </section>
+          <FriendsPanel />
+          <Leaderboard />
         </aside>
       </div>
     </div>

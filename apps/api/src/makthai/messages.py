@@ -75,6 +75,44 @@ MESSAGES: dict[str, dict[Locale, str]] = {
         "th": "{name} ถอนคำขอจบเกมแล้ว",
         "en": "{name} withdrew the request to end",
     },
+    "welcome_back": {"th": "ยินดีต้อนรับ {name}", "en": "Welcome, {name}"},
+    # -- เพื่อน
+    "player_not_found": {"th": "ไม่พบผู้เล่นคนนี้", "en": "No such player"},
+    "friend_self": {"th": "เพิ่มตัวเองเป็นเพื่อนไม่ได้", "en": "You cannot add yourself"},
+    "already_friends": {"th": "เป็นเพื่อนกันอยู่แล้ว", "en": "You are already friends"},
+    "friend_request_pending": {
+        "th": "ส่งคำขอไปแล้ว รอการตอบรับ",
+        "en": "Request already sent, waiting for a reply",
+    },
+    "friend_request_gone": {"th": "คำขอนี้ไม่อยู่แล้ว", "en": "That request is no longer available"},
+    # -- บัญชีผู้ใช้
+    "accounts_disabled": {
+        "th": "เซิร์ฟเวอร์นี้ไม่ได้เปิดระบบบัญชีผู้ใช้",
+        "en": "Accounts are not enabled on this server",
+    },
+    "unauthorized": {"th": "ยังไม่ได้เข้าสู่ระบบ", "en": "Not signed in"},
+    "user_not_found": {"th": "ไม่พบบัญชีนี้", "en": "Account not found"},
+    "username_taken": {"th": "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว", "en": "That username is taken"},
+    "email_taken": {"th": "อีเมลนี้ถูกใช้ไปแล้ว", "en": "That email is already registered"},
+    "invalid_credentials": {
+        "th": "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",
+        "en": "Incorrect username or password",
+    },
+    "invalid_email": {"th": "รูปแบบอีเมลไม่ถูกต้อง", "en": "That email address is not valid"},
+    "invalid_username": {
+        "th": "ชื่อผู้ใช้ต้องเป็น a-z, 0-9 หรือ _ ยาว 3-20 ตัว",
+        "en": "Username must be a-z, 0-9 or _ and 3-20 characters",
+    },
+    "weak_password": {
+        "th": "รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร",
+        "en": "Password must be at least 8 characters",
+    },
+    "password_too_long": {"th": "รหัสผ่านยาวเกินไป", "en": "Password is too long"},
+    "email_not_found": {"th": "ไม่พบบัญชีที่ใช้อีเมลนี้", "en": "No account uses that email"},
+    "rate_limited": {
+        "th": "ทำรายการถี่เกินไป รอสักครู่แล้วลองใหม่",
+        "en": "Too many attempts, please wait and try again",
+    },
     # -- ห้อง
     "busy": {
         "th": "ต้องออกจากห้องหรือเกมปัจจุบันก่อน",

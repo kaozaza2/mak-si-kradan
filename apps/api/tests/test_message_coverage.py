@@ -22,9 +22,7 @@ DYNAMIC_PREFIXES = ("ai_", "game_", "tagline_", "end_")
 
 def server_source() -> str:
     return "\n".join(
-        path.read_text()
-        for path in SOURCE_ROOT.rglob("*.py")
-        if path.name != "messages.py"
+        path.read_text() for path in SOURCE_ROOT.rglob("*.py") if path.name != "messages.py"
     )
 
 

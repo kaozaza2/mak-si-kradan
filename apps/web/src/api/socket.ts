@@ -89,6 +89,18 @@ export class GameSocket {
     this.socket = null;
   }
 
+  /** ต่อใหม่ทันที ใช้หลังล็อกอินหรือออกจากระบบ เพื่อผูกตัวตนใหม่ */
+  reconnect(): void {
+    this.socket?.close();
+    this.socket = null;
+    this.connect();
+  }
+
+  /** ใช้โทเคนของบัญชีเป็นตัวตนหลัก แทนโทเคนผู้เล่นชั่วคราว */
+  static rememberToken(token: string): void {
+    localStorage.setItem(TOKEN_KEY, token);
+  }
+
   static clearIdentity(): void {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(NAME_KEY);

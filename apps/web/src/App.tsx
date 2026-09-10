@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { InviteModal, TopBar, Toasts } from "./components/common";
+import { api } from "./api/rest";
+import type { ClientConfig } from "./api/types";
 import { loadCatalog } from "./i18n/messages";
 import { GameLobby } from "./screens/GameLobby";
 import { Portal } from "./screens/Portal";
@@ -29,10 +31,14 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     // โหลดคำแปลก่อนต่อ ไม่งั้นข้อความแรก ๆ จะโผล่มาเป็นรหัสดิบ
-    loadCatalog().then(() => {
+    loadCatalog().then(async () => {
       if (cancelled) return;
       setReady(true);
       store.connect();
+      const config = await api<ClientConfig & { accounts?: boolean }>("/api/v1/config").catch(
+        () => null,
+      );
+      if (!cancelled) await store.loadAccountContext(Boolean(config?.accounts));
       // เข้ามาทางลิงก์เชิญก็เข้าห้องให้เลย
       const invited = location.pathname.match(/^\/join\/([A-Za-z0-9]{4,10})$/);
       if (invited) {
