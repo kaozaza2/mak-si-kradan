@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from argon2 import PasswordHasher
@@ -29,9 +29,6 @@ USERNAME_PATTERN = re.compile(r"^[a-z0-9_]{3,20}$")
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@.]+\.[^\s@]{2,}$")
 MIN_PASSWORD = 8
 MAX_PASSWORD = 200
-
-OTP_LENGTH = 6
-OTP_TTL = timedelta(minutes=10)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,10 +117,6 @@ def verify_password(password: str, hashed: str | None) -> bool:
         return False
 
 
-def generate_otp() -> str:
-    return f"{secrets.randbelow(10**OTP_LENGTH):0{OTP_LENGTH}d}"
-
-
 class Accounts:
     """งานเกี่ยวกับบัญชีทั้งหมด ทำงานบนหนึ่ง session ที่ผู้เรียกเปิดมาให้"""
 
@@ -131,10 +124,16 @@ class Accounts:
         self.session = session
 
     async def _by_email(self, email: str) -> Player | None:
-        return await self.session.scalar(select(Player).where(Player.email == email))
+        player: Player | None = await self.session.scalar(
+            select(Player).where(Player.email == email)
+        )
+        return player
 
     async def _by_username(self, username: str) -> Player | None:
-        return await self.session.scalar(select(Player).where(Player.username == username))
+        player: Player | None = await self.session.scalar(
+            select(Player).where(Player.username == username)
+        )
+        return player
 
     async def register(
         self, *, email: str = "", username: str = "", password: str = "", display_name: str = ""

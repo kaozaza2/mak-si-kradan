@@ -213,7 +213,7 @@ class Game(TurnBasedEngine):
         return self.state.player_count
 
     @property
-    def scores(self) -> list[int]:  # type: ignore[override]
+    def scores(self) -> list[int]:
         return self.state.scores
 
     @scores.setter
@@ -225,7 +225,7 @@ class Game(TurnBasedEngine):
         return self.state.retired
 
     @property
-    def current(self) -> PlayerIndex:  # type: ignore[override]
+    def current(self) -> PlayerIndex:
         return self.state.current
 
     @current.setter
@@ -233,7 +233,7 @@ class Game(TurnBasedEngine):
         self.state.current = value
 
     @property
-    def turn(self) -> int:  # type: ignore[override]
+    def turn(self) -> int:
         return self.state.turn
 
     @turn.setter
@@ -241,7 +241,7 @@ class Game(TurnBasedEngine):
         self.state.turn = value
 
     @property
-    def status(self) -> str:  # type: ignore[override]
+    def status(self) -> str:
         return self.state.status
 
     @status.setter
@@ -249,7 +249,7 @@ class Game(TurnBasedEngine):
         self.state.status = value  # type: ignore[assignment]
 
     @property
-    def result(self) -> GameResult | None:  # type: ignore[override]
+    def result(self) -> GameResult | None:
         return self.state.result
 
     @result.setter
@@ -506,7 +506,7 @@ class Game(TurnBasedEngine):
         elif self.state.no_capture_streak >= self.state.no_capture_limit:
             self.end_game(EndReason.EXHAUSTION)
 
-    def stats(self) -> dict[str, Any]:  # type: ignore[override]
+    def stats(self) -> dict[str, Any]:
         """สรุปผลตอนจบเกม — รูปร่างเป็นของเกมนี้เอง แพลตฟอร์มแค่ส่งต่อ"""
         summary = compute_stats(self.state)
         return {

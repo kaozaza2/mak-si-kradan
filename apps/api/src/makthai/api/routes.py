@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from makthai import PROTOCOL_VERSION
 from makthai.api.schemas import ConfigResponse, GameListResponse, GameSummary, HealthResponse
 from makthai.auth import sign_token, verify_token
 from makthai.config import get_settings
@@ -24,8 +25,6 @@ from makthai.services.friends import Friends
 from makthai.services.verification import Verification
 
 API_VERSION = 1
-#: เวอร์ชันของโปรโตคอลเรียลไทม์ — เพิ่มเมื่อ client เก่ารับไม่ได้
-PROTOCOL_VERSION = 1
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -99,7 +98,9 @@ class RateLimiter:
 async def allow(request: Request, key: str, limit: int, window: float) -> bool:
     """ตัวนับอยู่บนแอปไม่ใช่ระดับโมดูล ทุกอินสแตนซ์จึงมีโควตาของตัวเอง"""
     who = request.client.host if request.client else "unknown"
-    return await request.app.state.limiter.allow(f"{key}:{who}", limit, window)
+    limiter: RateLimiter = request.app.state.limiter
+    allowed = await limiter.allow(f"{key}:{who}", limit, window)
+    return bool(allowed)
 
 
 # ── ระบบ ────────────────────────────────────────────────────────────────────

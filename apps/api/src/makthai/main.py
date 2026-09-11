@@ -38,13 +38,13 @@ class DatabaseSink:
     def __init__(self, history: History) -> None:
         self.history = history
 
-    def match_started(self, match: Match, seats: list[dict[str, Any]]) -> None:
+    def match_started(self, match: Match, seats: list[dict[str, Any]], source: str) -> None:
         self.history.schedule(
             self.history.start_match(
                 MatchRecord(
                     id=match.id,
                     game_id=match.game.id,
-                    source="quick",
+                    source=source,
                     mode=match.mode,
                     turn_seconds=match.turn_seconds,
                     ranked=match.ranked,

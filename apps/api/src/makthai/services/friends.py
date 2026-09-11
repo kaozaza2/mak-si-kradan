@@ -50,14 +50,19 @@ class Friends:
         if not value:
             return None
         if "@" in value:
-            return await self.session.scalar(select(Player).where(Player.email == value.lower()))
-        by_username = await self.session.scalar(
+            player: Player | None = await self.session.scalar(
+                select(Player).where(Player.email == value.lower())
+            )
+            return player
+        by_username: Player | None = await self.session.scalar(
             select(Player).where(Player.username == value.lower())
         )
-        return by_username or await self.session.get(Player, value)
+        if by_username is not None:
+            return by_username
+        return await self.session.get(Player, value)
 
     async def _between(self, a: str, b: str) -> Friendship | None:
-        return await self.session.scalar(
+        row: Friendship | None = await self.session.scalar(
             select(Friendship).where(
                 or_(
                     (Friendship.requester_id == a) & (Friendship.addressee_id == b),
@@ -65,6 +70,7 @@ class Friends:
                 )
             )
         )
+        return row
 
     async def request(self, user_id: str, identifier: str) -> FriendResult:
         """ขอเป็นเพื่อน — ระบุด้วย id ชื่อผู้ใช้ หรืออีเมลก็ได้

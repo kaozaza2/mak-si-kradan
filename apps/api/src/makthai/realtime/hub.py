@@ -12,10 +12,12 @@ from __future__ import annotations
 import random
 import time
 import uuid
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
+from makthai import PROTOCOL_VERSION
 from makthai.auth import (
     Identity,
+    Kind,
     new_guest_id,
     new_guest_name,
     room_code,
@@ -37,8 +39,6 @@ from makthai.realtime.room import Room
 from makthai.realtime.scheduler import AsyncioScheduler, Scheduler
 from makthai.realtime.session import Connection, Session
 
-PROTOCOL_VERSION = 1
-
 
 class MatchSink(Protocol):
     """ที่รับผลการเล่นไปเก็บ
@@ -47,7 +47,7 @@ class MatchSink(Protocol):
     ผู้เรียก และการเก็บต้องไม่มีวันทำให้เกมสะดุด
     """
 
-    def match_started(self, match: Match, seats: list[dict[str, Any]]) -> None: ...
+    def match_started(self, match: Match, seats: list[dict[str, Any]], source: str) -> None: ...
 
     def turns_played(self, match: Match, turns: list[dict[str, Any]]) -> None: ...
 
@@ -142,7 +142,7 @@ class Hub:
         session.connections.discard(connection)
         if session.connections:
             return
-        if session.home:
+        if session.home and self.cluster is not None:
             # สถานะอยู่อีกเครื่อง ที่นั่นต้องเป็นคนตัดสินใจเรื่องนาฬิกาและ AI คุมแทน
             self.cluster.publish(session.home, {"kind": "gone", "session": session.id})
             session.home = None
@@ -210,7 +210,7 @@ class Hub:
         connection.send(self._lobby_message())
 
         home = self._home_of(session.id)
-        if home:
+        if home and self.cluster is not None:
             # ต่อเข้าเครื่องไหนก็ได้ แล้วเครื่องนั้นพากลับไปหาห้องหรือเกมที่ค้างอยู่เอง
             session.home = home
             self.cluster.publish(home, {"kind": "attach", "session": self._identity(session)})
@@ -374,7 +374,8 @@ class Hub:
             message.get("capacity", game.min_players), game.min_players, game.max_players
         )
         turn_seconds = _clamp(message.get("turnSeconds", self.turn_seconds), 0, 600)
-        mode = message.get("mode") if message.get("mode") in game.modes else game.modes[0]
+        mode_raw = message.get("mode")
+        mode = mode_raw if isinstance(mode_raw, str) and mode_raw in game.modes else game.modes[0]
         bots = _clamp(message.get("bots", 0), 0, capacity - 1)
 
         # ตั้งค่าเองเมื่อไรก็ไม่นับอันดับ ไม่งั้นตั้งเวลายาว ๆ หรือใส่บอทเพื่อปั่นคะแนนได้
@@ -690,6 +691,7 @@ class Hub:
                     }
                     for seat_index, player_id in enumerate(seats)
                 ],
+                source,
             )
 
         match.arm_clock(self.scheduler, lambda: self._on_turn_timeout(match))
@@ -1278,6 +1280,8 @@ class Hub:
 
     def _forward(self, session: Session, message: dict[str, Any]) -> None:
         """ส่งคำสั่งไปให้โหนดที่ถือห้องหรือแมตช์ของผู้เล่นคนนี้"""
+        if self.cluster is None or session.home is None:
+            return
         self.cluster.publish(
             session.home,
             {"kind": "forward", "session": self._identity(session), "message": message},
@@ -1301,6 +1305,7 @@ class Hub:
         return None
 
     def _snapshot(self) -> dict[str, Any]:
+        assert self.cluster is not None
         playing: dict[str, int] = {}
         for match in self.matches.values():
             if match.engine.is_active:
@@ -1465,6 +1470,7 @@ class Hub:
 
     def _env_claim(self, sender: str, envelope: dict[str, Any]) -> None:
         """อีกเครื่องขอจับคู่คนที่รออยู่ในคิวของเรา"""
+        assert self.cluster is not None
         session_id = str(envelope.get("session", ""))
         game_id = str(envelope.get("game", ""))
         session = self.sessions.get(session_id)
@@ -1505,15 +1511,17 @@ class Hub:
 
     def _guest(self, edge: str, info: dict[str, Any]) -> Session | None:
         """หา session ของผู้เล่นที่ socket อยู่เครื่อง edge สร้างใหม่ถ้ายังไม่มี"""
+        assert self.cluster is not None
         session_id = str(info.get("id", ""))
         if not session_id:
             return None
         session = self.sessions.get(session_id)
         if session is None:
+            raw_kind = info.get("kind", "guest")
             session = Session(
                 id=session_id,
                 name=str(info.get("name", "")),
-                kind=str(info.get("kind", "guest")),
+                kind=cast(Kind, raw_kind if raw_kind in ("guest", "user") else "guest"),
             )
             self.sessions[session_id] = session
         else:
@@ -1535,6 +1543,7 @@ class Hub:
             self._release(session)
 
     def _release(self, session: Session) -> None:
+        assert self.cluster is not None
         connection = next(iter(session.connections), None)
         if isinstance(connection, RemoteConnection):
             self.cluster.publish(connection.edge, {"kind": "free", "session": session.id})

@@ -14,7 +14,7 @@ import base64
 import json
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from cryptography.hazmat.primitives import hashes
@@ -145,11 +145,12 @@ class GoogleVerifier:
 
     async def _load(self) -> dict[str, Any]:
         if self._fetch is not None:
-            return await self._fetch(self.jwks_url)
+            body = await self._fetch(self.jwks_url)
+            return cast(dict[str, Any], body)
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(self.jwks_url)
             response.raise_for_status()
-            return response.json()
+            return cast(dict[str, Any], response.json())
 
 
 __all__ = ["GOOGLE_JWKS_URL", "GoogleIdentity", "GoogleVerifier"]

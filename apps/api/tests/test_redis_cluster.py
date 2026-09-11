@@ -34,9 +34,7 @@ def redis_running() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not redis_running(), reason="ไม่ได้เปิด Redis ไว้ — ดูคำอธิบายบนหัวไฟล์"
-)
+pytestmark = pytest.mark.skipif(not redis_running(), reason="ไม่ได้เปิด Redis ไว้ — ดูคำอธิบายบนหัวไฟล์")
 
 
 async def wait_for(inbox: list, count: int = 1, timeout: float = 3.0) -> None:

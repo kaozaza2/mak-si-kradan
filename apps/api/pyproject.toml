@@ -13,10 +13,8 @@ dependencies = [
     "asyncpg>=0.30",
     "aiosqlite>=0.21",
     "argon2-cffi>=25.1",
-    "pyjwt>=2.10",
     "redis>=6.4",
     "httpx>=0.28",
-    "email-validator>=2.3",
     "cryptography>=50.0.1",
     "aiosmtplib>=5.1.3",
 ]

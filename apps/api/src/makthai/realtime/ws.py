@@ -9,6 +9,7 @@ hub เป็นโค้ดแบบซิงโครนัสเพื่อ�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import logging
@@ -47,7 +48,7 @@ class WebSocketConnection:
         if self.closed:
             return
         self.closed = True
-        with contextlib_suppress():
+        with contextlib.suppress(asyncio.QueueFull):
             self.outbox.put_nowait(None)
 
     async def pump(self) -> None:
@@ -57,16 +58,6 @@ class WebSocketConnection:
             if message is None:
                 return
             await self.socket.send_text(json.dumps(message, ensure_ascii=False))
-
-
-class contextlib_suppress:
-    """ตัวช่วยเล็ก ๆ แทน contextlib.suppress เพื่อให้อ่านง่ายตรงจุดใช้งาน"""
-
-    def __enter__(self) -> None:
-        return None
-
-    def __exit__(self, *_: object) -> bool:
-        return True
 
 
 async def serve(socket: WebSocket, hub: Hub) -> None:

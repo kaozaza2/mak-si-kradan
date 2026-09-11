@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from makthai.auth import Kind
+
 
 class Connection(Protocol):
     """หนึ่งการเชื่อมต่อของผู้เล่นหนึ่งคน (เปิดหลายแท็บได้)"""
@@ -30,7 +32,7 @@ class Session:
 
     id: str
     name: str
-    kind: str
+    kind: Kind
     connections: set[Connection] = field(default_factory=set)
     room_id: str | None = None
     match_id: str | None = None
