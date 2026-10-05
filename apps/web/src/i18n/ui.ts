@@ -117,6 +117,10 @@ const UI: Dictionary = {
   signIn: { th: "เข้าสู่ระบบ", en: "Sign in" },
   signUp: { th: "สมัครใหม่", en: "Sign up" },
   signOut: { th: "ออกจากระบบ", en: "Sign out" },
+  closeOtherSessions: {
+    th: "ออกจากเครื่องอื่นทั้งหมด",
+    en: "Sign out other devices",
+  },
   record: {
     th: "ชนะ {wins} · แพ้ {losses} · เสมอ {draws} · เล่นแล้ว {games} เกม",
     en: "{wins}W · {losses}L · {draws}D · {games} games",

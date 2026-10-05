@@ -20,7 +20,7 @@ from makthai.mailer import create_mailer
 from makthai.realtime.cluster import create_cluster
 from makthai.realtime.hub import ConnectionGate, Hub
 from makthai.realtime.match import Match
-from makthai.realtime.ws import serve
+from makthai.realtime.ws import SessionResolver, serve
 from makthai.services.accounts import Accounts
 from makthai.services.google import GoogleVerifier
 from makthai.services.history import History, MatchOutcome, MatchRecord, SeatRecord
@@ -164,7 +164,7 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(socket: WebSocket) -> None:
-        await serve(socket, hub, gate)
+        await serve(socket, hub, gate, SessionResolver(secret, database))
 
     return app
 

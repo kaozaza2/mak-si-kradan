@@ -139,8 +139,12 @@ MESSAGES: dict[str, dict[Locale, str]] = {
         "en": "Could not verify that Google token",
     },
     "password_changed": {
-        "th": "เปลี่ยนรหัสผ่านเรียบร้อยแล้ว",
-        "en": "Your password has been changed",
+        "th": "เปลี่ยนรหัสผ่านเรียบร้อยแล้ว อุปกรณ์อื่นถูกออกจากระบบแล้ว",
+        "en": "Your password has been changed and other devices were signed out",
+    },
+    "sessions_closed": {
+        "th": "ออกจากเครื่องอื่นแล้ว {count} เครื่อง",
+        "en": "Signed out of {count} other devices",
     },
     "reset_email_subject": {
         "th": "รหัสตั้งรหัสผ่านใหม่หมากไทย: {code}",

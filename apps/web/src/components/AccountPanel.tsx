@@ -208,9 +208,18 @@ export function AccountPanel() {
             </div>
           ) : null}
         </div>
-        <button className="ghost small" onClick={() => store.signOut()}>
-          {ui("signOut")}
-        </button>
+        <div className="row gap">
+          <button
+            className="ghost small"
+            type="button"
+            onClick={() => void store.closeOtherSessions()}
+          >
+            {ui("closeOtherSessions")}
+          </button>
+          <button className="ghost small" onClick={() => void store.signOut()}>
+            {ui("signOut")}
+          </button>
+        </div>
       </section>
     );
   }

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
@@ -22,7 +23,7 @@ from makthai.api.schemas import (
     HealthResponse,
     ReadyResponse,
 )
-from makthai.auth import sign_token, verify_token
+from makthai.auth import Identity, looks_like_session, sign_token, verify_token
 from makthai.config import get_settings
 from makthai.games import registry
 from makthai.limits import Clock, WindowCounter
@@ -30,6 +31,7 @@ from makthai.mailer import otp_email
 from makthai.messages import DEFAULT_LOCALE, LOCALES, catalog_for, resolve_locale
 from makthai.services.accounts import Accounts, check_password
 from makthai.services.friends import Friends
+from makthai.services.sessions import Sessions
 from makthai.services.verification import Verification
 
 API_VERSION = 1
@@ -67,8 +69,34 @@ def bearer(request: Request) -> str | None:
     return header.removeprefix("Bearer ").strip() or None
 
 
-def identity_of(request: Request) -> Any:
-    return verify_token(bearer(request), request.app.state.auth_secret)
+async def identity_of(request: Request) -> Identity | None:
+    """คืนตัวตนจากโทเคนที่แนบมา ไม่งั้นคืน None
+
+    ต้องรองรับโทเคนสองแบบ: เซสชันของบัญชี (ตรวจฝั่งเซิร์ฟเวอร์ ยกเลิกได้)
+    และ token ของผู้เล่นชั่วคราว (เซ็นเอง ไม่ต้องแตะฐานข้อมูล)
+    ตรวจรูปแบบจากตัวโทเคนก่อน ไม่งั้นจะเสียเวลาไปเปิดฐานข้อมูลทุกครั้ง
+    """
+    token = bearer(request)
+    if not token:
+        return None
+
+    if looks_like_session(token):
+        database = request.app.state.database
+        if database is None:
+            return None
+        # เปิดครั้งเดียวจบ สองคิวรีต่อคำขอคือการรอที่ไม่จำเป็น
+        async with database.session() as session:
+            player_id = await Sessions(session).resolve(token)
+            if player_id is None:
+                return None
+            # ชื่ออ่านจากตารางผู้เล่น ไม่ใช่จากโทเคน
+            # เพราะผู้เล่นเปลี่ยนชื่อได้ และชื่อในโทเคนจะค้างจนกว่าจะออกใหม่
+            user = await Accounts(session).get(player_id)
+        if user is None:
+            return None
+        return Identity(id=player_id, name=user.name, kind="user", expires_at=0.0)
+
+    return verify_token(token, request.app.state.auth_secret)
 
 
 class RateLimiter:
@@ -270,7 +298,7 @@ async def register(request: Request) -> Any:
     if not result.ok or result.user is None:
         return fail(result.code or "invalid_credentials", 409)
 
-    payload = _authenticated(request, result.user)
+    payload = await _authenticated(request, result.user)
     if result.user.email and not result.user.verified:
         await _send_otp(request, result.user.email, _locale_of(request, body))
         payload["verificationRequired"] = True
@@ -304,13 +332,13 @@ async def login(request: Request) -> Any:
     # จะเจอข้อจำกัดตอนกดส่งจริง ทั้งที่ไม่ได้ยิงผิดเลย
     if account_key:
         request.app.state.limiter.reset(account_key)
-    return _authenticated(request, result.user)
+    return await _authenticated(request, result.user)
 
 
 @router.get("/api/v1/me", tags=["accounts"])
 async def me(request: Request) -> Any:
     database = request.app.state.database
-    identity = identity_of(request)
+    identity = await identity_of(request)
     if identity is None:
         return fail("unauthorized", 401)
     if database is None:
@@ -335,7 +363,7 @@ async def leaderboard(
 
 @router.get("/api/v1/players/search", tags=["accounts"])
 async def search_players(request: Request, q: Annotated[str, Query(max_length=MAX_QUERY_LENGTH)]) -> Any:
-    identity = identity_of(request)
+    identity = await identity_of(request)
     if identity is None:
         return fail("unauthorized", 401)
     if not await allow(request, "search", 30, 60):
@@ -374,7 +402,7 @@ async def verify_otp(request: Request) -> Any:
         result = await Verification(session).verify(email, str(body.get("code", "")))
     if not result.ok or result.user is None:
         return fail(result.code or "otp_invalid", 400)
-    return _authenticated(request, result.user)
+    return await _authenticated(request, result.user)
 
 
 @router.post("/api/v1/auth/resend-otp", tags=["accounts"])
@@ -436,10 +464,18 @@ async def reset_password(request: Request) -> Any:
 
         # ตั้งรหัสใหม่ในเซสชันเดียวกับที่ตัดรหัสทิ้ง รหัสหนึ่งใบจึงเปลี่ยนได้ครั้งเดียว
         result = await Accounts(session).set_password(email, password)
+        # เปลี่ยนรหัสผ่านแล้วทุกเซสชันเดิมต้องตาย
+        # ไม่งั้นคนที่รหัสเก่ายังอยู่ในมือถือที่หายไปจะยังเข้าได้ต่อ
+        # ซึ่งเป็นการทำให้การเปลี่ยนรหัสผ่านใช้ไม่ได้ผลจริง
+        revoked = 0
+        if result.ok and result.user is not None:
+            revoked = await Sessions(session).revoke_all(result.user.id)
     if not result.ok or result.user is None:
         return fail(result.code or "weak_password", 400)
+    if revoked:
+        logger.info("เปลี่ยนรหัสผ่านของ %s ปิดเซสชันเดิม %d อัน", result.user.id, revoked)
 
-    payload = _authenticated(request, result.user)
+    payload = await _authenticated(request, result.user)
     payload["code"] = "password_changed"
     return payload
 
@@ -464,7 +500,7 @@ async def google_login(request: Request) -> Any:
         result = await Accounts(session).login_with_google(identity)
     if not result.ok or result.user is None:
         return fail(result.code or "google_invalid", 401)
-    return _authenticated(request, result.user)
+    return await _authenticated(request, result.user)
 
 
 # ── เพื่อน ──────────────────────────────────────────────────────────────────
@@ -472,7 +508,7 @@ async def google_login(request: Request) -> Any:
 
 @router.get("/api/v1/friends", tags=["friends"])
 async def list_friends(request: Request) -> Any:
-    identity = identity_of(request)
+    identity = await identity_of(request)
     if identity is None:
         return fail("unauthorized", 401)
     database = request.app.state.database
@@ -488,9 +524,47 @@ async def list_friends(request: Request) -> Any:
     }
 
 
+@router.post("/api/v1/auth/logout", tags=["accounts"])
+async def logout(request: Request) -> Any:
+    """ออกจากระบบ — ยกเลิกเซสชันนี้
+
+    ต้องยกเลิกฝั่งเซิร์ฟเวอร์ ไม่ใช่แค่ลบออกจากเครื่อง ไม่งั้นโทเคนที่อาจถูก
+    เก็บไว้ยังใช้ต่อได้จนหมดอายุ
+    """
+    token = bearer(request)
+    database = request.app.state.database
+    if token is None or database is None:
+        # ไม่มีอะไรต้องทำ ตอบว่าสำเร็จเสมอ ไม่ให้คนเดาได้ว่าตัวเองมีโทเคนหรือไม่
+        return {"ok": True}
+    if not looks_like_session(token):
+        # token ของผู้เล่นชั่วคราวยกเลิกไม่ได้ เพราะไม่มีสถานะให้ยกเลิก
+        # แต่การลบทิ้งทำให้ผู้ใช้เป็นคนใหม่ ซึ่งถือว่าออกจากระบบแล้ว
+        return {"ok": True}
+    async with database.session() as session:
+        await Sessions(session).revoke(token)
+    return {"ok": True}
+
+
+@router.post("/api/v1/auth/sessions", tags=["accounts"])
+async def revoke_all_sessions(request: Request) -> Any:
+    """ปิดทุกอุปกรณ์ — ใช้เมื่อรู้ว่ามีคนอื่นใช้บัญชีนี้อยู่"""
+    identity = await identity_of(request)
+    if identity is None:
+        return fail("unauthorized", 401)
+    database = request.app.state.database
+    if database is None:
+        return fail("accounts_disabled", 400)
+
+    async with database.session() as session:
+        closed = await Sessions(session).revoke_all(identity.id)
+        # ออกโทเคนใหม่ให้ใช้ต่อ ไม่งั้นคนที่เพิ่งสั่งจะถูกตัดออกตัวเองด้วย
+        issued = await Sessions(session).issue(identity.id, ttl=_session_ttl())
+    return {"ok": True, "closed": closed, "token": issued.token}
+
+
 @router.post("/api/v1/friends/request", tags=["friends"])
 async def request_friend(request: Request) -> Any:
-    identity = identity_of(request)
+    identity = await identity_of(request)
     if identity is None:
         return fail("unauthorized", 401)
     database = request.app.state.database
@@ -509,7 +583,7 @@ async def request_friend(request: Request) -> Any:
 
 @router.post("/api/v1/friends/respond", tags=["friends"])
 async def respond_friend(request: Request) -> Any:
-    identity = identity_of(request)
+    identity = await identity_of(request)
     if identity is None:
         return fail("unauthorized", 401)
     database = request.app.state.database
@@ -531,7 +605,7 @@ async def respond_friend(request: Request) -> Any:
 
 @router.post("/api/v1/friends/remove", tags=["friends"])
 async def remove_friend(request: Request) -> Any:
-    identity = identity_of(request)
+    identity = await identity_of(request)
     if identity is None:
         return fail("unauthorized", 401)
     database = request.app.state.database
@@ -544,7 +618,25 @@ async def remove_friend(request: Request) -> Any:
     return {"ok": removed}
 
 
-def _authenticated(request: Request, user: Any) -> dict[str, Any]:
+def _session_ttl() -> timedelta:
+    return timedelta(days=get_settings().session_ttl_days)
+
+
+async def _authenticated(request: Request, user: Any) -> dict[str, Any]:
+    """ออกโทเคนให้ผู้ใช้ที่เพิ่งเข้าสู่ระบบ
+
+    บัญชีได้เซสชันฝั่งเซิร์ฟเวอร์ เพื่อให้ยกเลิกได้เมื่อเปลี่ยนรหัสผ่านหรือถูกแบน
+    ไม่ใช้ token ที่เซ็นเอง เพราะตัวนั้นยกเลิกไม่ได้
+    """
+    database = request.app.state.database
+    if database is not None:
+        async with database.session() as session:
+            issued = await Sessions(session).issue(user.id, ttl=_session_ttl())
+        if issued.ok:
+            return {"token": issued.token, "user": user.as_dict()}
+        logger.error("ออกเซสชันให้ %s ไม่สำเร็จ", user.id)
+    # ออกโทเคนแบบเดิมไว้เป็นทางสำรอง ดีกว่าให้ล็อกอินไม่ได้เลย
+    # ทั้งที่รหัสผ่านถูกต้อง แต่ต้องบันทึกไว้ว่าเราเลือกทางสำรอง
     token = sign_token(user.id, user.name, "user", request.app.state.auth_secret)
     return {"token": token, "user": user.as_dict()}
 

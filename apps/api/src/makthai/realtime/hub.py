@@ -18,6 +18,7 @@ from makthai import PROTOCOL_VERSION
 from makthai.auth import (
     Identity,
     Kind,
+    looks_like_session,
     new_guest_id,
     new_guest_name,
     room_code,
@@ -268,7 +269,12 @@ class Hub:
         if kind == "hello" and not self._allow_hello(connection):
             return
         if kind == "hello":
-            self._on_hello(connection, message)
+            self._on_hello(
+                connection,
+                message,
+                identity=getattr(connection, "identity", None),
+                token=getattr(connection, "token", None),
+            )
             return
 
         session = self.sessions.get(connection.session_id or "")
@@ -323,7 +329,18 @@ class Hub:
 
     # ── ตัวตน ───────────────────────────────────────────────────────────────
 
-    def _on_hello(self, connection: Connection, message: dict[str, Any]) -> None:
+    def _on_hello(
+        self,
+        connection: Connection,
+        message: dict[str, Any],
+        identity: Identity | None = None,
+        token: str | None = None,
+    ) -> None:
+        """เริ่มการเล่น
+
+        identity และ token ส่งมาจากชั้น transport ซึ่งค้นฐานข้อมูลได้
+        ถ้าไม่ส่งมา hub จะตรวจลายเซ็นเอง ซึ่งพอสำหรับผู้เล่นชั่วคราว
+        """
         # client รุ่นเก่าต้องได้คำตอบที่เข้าใจได้ ไม่ใช่เจอข้อความแปลก ๆ แล้วพังเงียบ
         protocol = message.get("protocol")
         if isinstance(protocol, int) and protocol != PROTOCOL_VERSION:
@@ -336,7 +353,11 @@ class Hub:
             )
             return
 
-        claim: Identity | None = verify_token(message.get("token"), self.auth_secret)
+        claim = identity
+        if claim is None and not looks_like_session(message.get("token")):
+            # ที่ไม่ใช่เซสชันค่อยตรวจลายเซ็นเอง เพราะเซสชันต้องค้นฐานข้อมูล
+            # ซึ่งทำในชั้น transport ที่รอ I/O ได้ ไม่ใช่ตรงนี้
+            claim = verify_token(message.get("token"), self.auth_secret)
         session = self.sessions.get(claim.id) if claim else None
 
         if session is None:
@@ -363,7 +384,11 @@ class Hub:
                 "id": session.id,
                 "name": session.name,
                 "kind": session.kind,
-                "token": sign_token(session.id, session.name, session.kind, self.auth_secret),
+                # บัญชีใช้โทเคนที่ชั้น transport ออกให้ เพราะต้องบันทึกลงฐานข้อมูล
+                # ส่วนผู้เล่นชั่วคราวเซ็นเองได้เลย ไม่ต้องแตะฐานข้อมูล
+                "token": token
+                if token is not None
+                else sign_token(session.id, session.name, session.kind, self.auth_secret),
             }
         )
         connection.send(self._lobby_message())
