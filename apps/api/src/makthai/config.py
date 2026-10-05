@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     auth_secret: str = ""
     turn_seconds: int = 45
 
+    #: จำนวนสายที่คนหนึ่งคนเปิดพร้อมกันได้ คนปกติเปิดไม่กี่แท็บ
+    max_connections_per_peer: int = 8
+    #: จำนวนสายที่โหนดหนึ่งรับได้พร้อมกัน แต่ละสายกินหน่วยความจำคงที่
+    #: ต้องตั้งให้พอดีกับขนาดเครื่อง ไม่งั้นโหนดจะตายก่อนที่จะใช้เครื่องเต็ม
+    max_connections_total: int = 10_000
+
     #: ไม่ตั้งทั้ง smtp และ webhook = พิมพ์รหัสยืนยันลงบันทึกให้เห็นตอนพัฒนา
     mail_webhook_url: str = ""
     mail_webhook_token: str = ""

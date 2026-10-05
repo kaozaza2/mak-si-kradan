@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
@@ -26,6 +25,7 @@ from makthai.api.schemas import (
 from makthai.auth import sign_token, verify_token
 from makthai.config import get_settings
 from makthai.games import registry
+from makthai.limits import Clock, WindowCounter
 from makthai.mailer import otp_email
 from makthai.messages import DEFAULT_LOCALE, LOCALES, catalog_for, resolve_locale
 from makthai.services.accounts import Accounts, check_password
@@ -47,6 +47,12 @@ MAX_QUERY_LENGTH = 64
 #: ต้องสั้นกว่า timeout ของ probe ที่ orchestrator ตั้งไว้
 #: ไม่งั้นถ้าฐานข้อมูลค้าง เราจะช้ากว่าที่มันควรตอบว่าไม่พร้อม
 PROBE_TIMEOUT = 3.0
+
+#: ล็อกอินพลาดได้กี่ครั้งต่อบัญชีในหน้าต่างเวลานี้
+#: ตัวเลขนี้คือสิ่งที่ทำให้เดารหัสผ่านแพง ไม่ใช่แค่ข้อจำกัดความถี่
+#: ให้พอให้พิมพ์ผิดได้หลายครั้ง แต่ให้เดายากจนไม่คุ้มที่จะเดา
+LOGIN_ATTEMPTS = 8
+LOGIN_WINDOW = 900.0
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -71,20 +77,13 @@ class RateLimiter:
     ตั้ง redis_url เมื่อไหร่จะนับรวมกันทั้งคลัสเตอร์ ไม่งั้นโควตาจะคูณตามจำนวนเครื่อง
     ซึ่งเท่ากับไม่ได้จำกัดอะไรเลยเมื่อกระจายหลายโหนด
 
-    ตัวนับในเครื่องเก็บเป็น dict ที่คีย์มาจาก IP ของผู้เรียก ซึ่งผู้โจมตีควบคุมได้
-    ถ้าไม่กวาดทิ้ง ใครส่ง request จาก IP ใหม่ทุกครั้งก็ทำให้หน่วยความจำโตไม่จำกัด
-    จึงต้องล้างรายการที่หมดอายุแล้วออกเป็นระยะ ไม่ใช่รอให้โดน OOM
+    ตัวนับในเครื่องคีย์จาก IP ซึ่งผู้โจมตีควบคุมได้ จึงต้องมีขอบเขตเสมอ
+    รายละเอียดของการกวาดและเพดานอยู่ที่ WindowCounter ซึ่งใช้ร่วมกับการคุม WebSocket
     """
 
-    #: เกินจำนวนนี้แล้วล้างรายการที่หมดอายุทิ้งก่อนบันทึกคีย์ใหม่
-    SWEEP_AT = 4096
-    #: คีย์ที่ยังไม่หมดอายุแต่โตถึงขีดนี้ = ยุ่งจนใช้หน่วยความจำมากเกินไป
-    #: ตัดทิ้งทั้งหมดแทนที่จะปล่อยให้ตัวแรกที่เข้ามาได้ไม่จำกัด
-    MAX_KEYS = 65536
-
-    def __init__(self, redis_url: str = "") -> None:
+    def __init__(self, redis_url: str = "", clock: Clock | None = None) -> None:
         self.redis_url = redis_url
-        self._hits: dict[str, tuple[int, float]] = {}
+        self._local = WindowCounter(clock, on_reset=self._warn_reset)
         self._redis: Any = None
 
     async def allow(self, key: str, limit: int, window: float) -> bool:
@@ -94,28 +93,21 @@ class RateLimiter:
                 return shared
             # Redis ล่มก็ถอยไปนับของเครื่องตัวเอง จำกัดหลวมกว่าเดิมแต่ยังจำกัดอยู่
             # ดีกว่าปล่อยผ่านทั้งหมด และดีกว่าปิดประตูใส่ทุกคนเพราะแคชล่ม
-        return self._allow_local(key, limit, window)
+        return self._local.allow(key, limit, window)
 
-    def _allow_local(self, key: str, limit: int, window: float) -> bool:
-        now = time.monotonic()
-        if len(self._hits) >= self.SWEEP_AT:
-            self._sweep(now)
-        if len(self._hits) >= self.MAX_KEYS:
-            # ทุกคีย์ยังไม่หมดอายุ แปลว่าโดนยิงจริง ไม่ใช่แค่คีย์ค้าง
-            # เคลียร์ทั้งก้อนดีกว่าปล่อยให้โดนไม่จำกัด เพราะยอมให้ถูกยิงเพิ่ม
-            # แต่ไม่ยอมให้กินหน่วยความจำจนพังตัวเซิร์ฟเวอร์
-            logger.warning("ตัวนับโควตาเต็ม %d คีย์ ล้างทิ้งทั้งหมด", self.MAX_KEYS)
-            self._hits.clear()
-        count, reset_at = self._hits.get(key, (0, 0.0))
-        if reset_at < now:
-            self._hits[key] = (1, now + window)
-            return True
-        self._hits[key] = (count + 1, reset_at)
-        return count + 1 <= limit
+    def reset(self, key: str) -> None:
+        """ล้างโควตาเมื่อรู้แล้วว่าผู้ใช้ทำถูกต้อง เช่น ล็อกอินสำเร็จ
 
-    def _sweep(self, now: float) -> None:
-        """ทิ้งรายการที่หมดอายุแล้ว — คีย์ที่ยังนับอยู่ต้องเก็บไว้"""
-        self._hits = {key: hit for key, hit in self._hits.items() if hit[1] >= now}
+        มิฉะนั้นผู้ใช้ที่พิมพ์ผิดสองสามครั้งตอนเขียนรหัสจะเจอข้อจำกัดตอนกดส่งจริง
+        ทั้งที่ไม่ได้ยิงผิดเลย
+        """
+        self._local.reset(key)
+
+    def _warn_reset(self) -> None:
+        logger.warning(
+            "ตัวนับโควตาเต็ม %d คีย์ ล้างทิ้งทั้งหมด — โดนยิงจากแหล่งที่หลากหลายมาก",
+            self._local.MAX_KEYS,
+        )
 
     async def _allow_shared(self, key: str, limit: int, window: float) -> bool | None:
         try:
@@ -300,13 +292,18 @@ async def login(request: Request) -> Any:
     # เพราะผู้โจมตีที่มี IP หลายเครื่องยิงผ่านข้อจำกัดราย IP ได้ แต่ถ้าล็อกตามชื่อบัญชี
     # เขาจะต้องแตะบัญชีนั้นถึงจะเดาได้ ทำให้เหลือแค่การโจมตีแบบกระจายที่แพงขึ้นมาก
     # ข้อความตอบเหมือนกันหมดเพื่อไม่ให้บอกว่าบัญชีนี้มีอยู่จริงหรือเปล่า
-    if identifier and not await allow(request, f"login_account:{identifier.lower()}", 10, 900):
+    account_key = f"login_account:{identifier.lower()}" if identifier else ""
+    if account_key and not await allow(request, account_key, LOGIN_ATTEMPTS, LOGIN_WINDOW):
         return fail("rate_limited", 429)
 
     async with database.session() as session:
         result = await Accounts(session).login(identifier, str(body.get("password", "")))
     if not result.ok or result.user is None:
         return fail(result.code or "invalid_credentials", 401)
+    # เข้าได้แล้วถือว่าพิมพ์ถูก เคลียร์โควตาทิ้ง ไม่งั้นผู้ใช้ที่พิมพ์ผิดตอนเขียนรหัส
+    # จะเจอข้อจำกัดตอนกดส่งจริง ทั้งที่ไม่ได้ยิงผิดเลย
+    if account_key:
+        request.app.state.limiter.reset(account_key)
     return _authenticated(request, result.user)
 
 

@@ -4,7 +4,7 @@
 """
 
 from makthai import PROTOCOL_VERSION
-from makthai.realtime.hub import Hub
+from makthai.realtime.hub import ConnectionGate, Hub
 from makthai.realtime.match import Match
 from makthai.realtime.room import Room
 from makthai.realtime.scheduler import AsyncioScheduler, ManualScheduler, Scheduler
@@ -14,6 +14,7 @@ __all__ = [
     "PROTOCOL_VERSION",
     "AsyncioScheduler",
     "Connection",
+    "ConnectionGate",
     "Hub",
     "ManualScheduler",
     "Match",

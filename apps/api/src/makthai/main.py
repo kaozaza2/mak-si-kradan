@@ -18,7 +18,7 @@ from makthai.db.session import create_database
 from makthai.games import registry
 from makthai.mailer import create_mailer
 from makthai.realtime.cluster import create_cluster
-from makthai.realtime.hub import Hub
+from makthai.realtime.hub import ConnectionGate, Hub
 from makthai.realtime.match import Match
 from makthai.realtime.ws import serve
 from makthai.services.accounts import Accounts
@@ -106,6 +106,16 @@ def create_app() -> FastAPI:
         sink=DatabaseSink(history) if history else None,
         cluster=create_cluster(settings.redis_url, settings.node_id, settings.cluster_prefix),
     )
+    #: กันคนเดียวกินการเชื่อมต่อทั้งโหนด ต้องแชร์เดียวกันทุกสาย ไม่งั้นนับไม่ถูก
+    gate = ConnectionGate(
+        max_per_peer=settings.max_connections_per_peer,
+        max_total=settings.max_connections_total,
+    )
+    logger.info(
+        "รับการเชื่อมต่อได้สูงสุด %d สาย (ต่อ IP %d)",
+        settings.max_connections_total,
+        settings.max_connections_per_peer,
+    )
     if hub.cluster is not None:
         logger.info("เข้าคลัสเตอร์ในชื่อโหนด %s", hub.cluster.node_id)
 
@@ -154,7 +164,7 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(socket: WebSocket) -> None:
-        await serve(socket, hub)
+        await serve(socket, hub, gate)
 
     return app
 

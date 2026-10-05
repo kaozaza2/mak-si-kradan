@@ -9,8 +9,8 @@ hub ไม่รู้จักกติกาของเกมใดเลย 
 
 from __future__ import annotations
 
+import logging
 import random
-import time
 import uuid
 from typing import Any, Protocol, cast
 
@@ -27,6 +27,7 @@ from makthai.auth import (
 )
 from makthai.domain.registry import GameRegistry
 from makthai.domain.types import EndReason
+from makthai.limits import WindowCounter
 from makthai.realtime.cluster import (
     PEER_TIMEOUT,
     SNAPSHOT_INTERVAL,
@@ -39,6 +40,8 @@ from makthai.realtime.room import Room
 from makthai.realtime.scheduler import AsyncioScheduler, Scheduler
 from makthai.realtime.session import Connection, Session
 
+logger = logging.getLogger(__name__)
+
 #: ผู้เล่นที่หลุดไปแล้วเก็บไว้นานเท่าไร ก่อนลืมทิ้ง
 #: ต้องยาวพอให้เขากลับมาได้ เช่น เปลี่ยนเน็ต ปิดเบราว์เซอร์ค้างไว้ หรือเดินออกจากเกมชั่วคราว
 #: ตัวเลขนี้คือเวลาที่กลับมาแล้ว "ยังอยู่ในห้องเดิม" ได้ ยิ่งยาวไว้ก็ยิ่งกินหน่วยความจำ
@@ -50,6 +53,86 @@ FINISHED_MATCH_TTL = 600.0
 
 #: ตรวจหาสิ่งที่ค้างทุกกี่วินาที
 REAP_INTERVAL = 60.0
+
+#: ขอสร้าง session ใหม่ได้กี่ครั้งจาก IP เดียวในหน้าต่างเวลานี้
+#: ผู้เล่นปกติต่อครั้งเดียวแล้วใช้ session นั้นต่อ แม้เปิดหลายแท็บก็ใช้ token เดิม
+#: การยิงซ้ำเกินนี้จึงเป็นการสร้าง session ทิ้ง ไม่ใช่การเล่น
+HELLO_LIMIT = 20
+HELLO_WINDOW = 300.0
+
+#: ส่งข้อความได้กี่ข้อความต่อสายในหน้าต่างเวลานี้
+#: คำสั่งหนึ่งเทิร์นคือสองสามข้อความ เผื่อ UI ยิงบ่อย ๆ เลยตั้งหลายเท่า
+MESSAGE_LIMIT = 60
+MESSAGE_WINDOW = 1.0
+
+#: ขนาดข้อความที่รับได้สูงสุด
+#: คำสั่งของเกมเล็กมาก แต่การยิงข้อความยาว ๆ วินาทีเดียวก็กินหน่วยความจำทั้งโหนด
+MAX_MESSAGE_BYTES = 16 * 1024
+
+#: จำนวนสายที่คนเดียวต่อได้ คนปกติเปิดได้ไม่กี่แท็บ
+MAX_CONNECTIONS_PER_PEER = 8
+
+#: จำนวนสายทั้งหมดที่โหนดรับได้พร้อมกัน
+#: ต้องตั้งให้พอดีกับขนาดเครื่อง เพราะแต่ละสายกินหน่วยความจำคงที่
+MAX_CONNECTIONS_TOTAL = 10_000
+
+#: รหัสปิดตามมาตรฐานเมื่อถูกปฏิเสธด้วยนโยบาย ไม่ใช่เพราะพลาด
+WS_POLICY_VIOLATION = 1008
+
+
+class SchedulerClock:
+    """อ่านเวลาจาก scheduler เพื่อให้ตัวจำกัดความถี่เดินตามเวลาที่เทสต์ควบคุม"""
+
+    def __init__(self, scheduler: Scheduler) -> None:
+        self._scheduler = scheduler
+
+    def now(self) -> float:
+        return self._scheduler.now()
+
+
+class ConnectionGate:
+    """กันไม่ให้คนเดียวกินการเชื่อมต่อทั้งระบบ
+
+    การเชื่อมต่อแต่ละสายกินหน่วยความจำคงที่ ไม่ว่าผู้เล่นจะยิงอะไรเข้ามาก็ตาม
+    ถ้าไม่จำกัด ใครเปิดสายทิ้งไว้เป็นพันสายก็ทำให้โหนดนี้รับไม่ไหว
+    และเมื่อกระจายหลายเครื่อง แต่ละโหนดต้องแบกได้จริง
+
+    อยู่ที่นี่ ไม่ใช่ใน ws.py เพราะเป็นนโยบายของศูนย์กลาง ไม่ใช่รายละเอียดของ transport
+    ทำให้ทดสอบได้โดยไม่ต้องมี WebSocket จริง
+    """
+
+    def __init__(
+        self,
+        max_per_peer: int = MAX_CONNECTIONS_PER_PEER,
+        max_total: int = MAX_CONNECTIONS_TOTAL,
+    ) -> None:
+        self.max_per_peer = max_per_peer
+        self.max_total = max_total
+        self._by_peer: dict[str, int] = {}
+
+    def admit(self, peer: str) -> bool:
+        """รับการเชื่อมต่อไหม ถ้าไม่รับผู้เรียกต้องปิดเอง ไม่ใช่รอให้ hub ตัดสินใจ"""
+        if sum(self._by_peer.values()) >= self.max_total:
+            logger.warning("ปฏิเสธการเชื่อมต่อ ถึงเพดานรวม %d", self.max_total)
+            return False
+        current = self._by_peer.get(peer, 0)
+        if current >= self.max_per_peer:
+            logger.warning("ปฏิเสธการเชื่อมต่อ %s เต็มแล้ว (%d)", peer, current)
+            return False
+        self._by_peer[peer] = current + 1
+        return True
+
+    def release(self, peer: str) -> None:
+        """คืนที่เมื่อสายปิด ต้องเรียกเสมอ ไม่งั้นตัวเลขจะไม่เคยลดลง"""
+        current = self._by_peer.get(peer, 0)
+        if current <= 1:
+            self._by_peer.pop(peer, None)
+        else:
+            self._by_peer[peer] = current - 1
+
+    @property
+    def total(self) -> int:
+        return sum(self._by_peer.values())
 
 
 class MatchSink(Protocol):
@@ -107,6 +190,9 @@ class Hub:
         self.queues: dict[str, list[str]] = {}
         self._autopilot_timers: dict[str, Any] = {}
         self._reaper: Any = None
+        # ตัวจำกัดความถี่ ใช้นาฬิกาเดียวกับ scheduler เพื่อให้ทดสอบได้
+        self._hello_counter = WindowCounter(SchedulerClock(self.scheduler))
+        self._message_counter = WindowCounter(SchedulerClock(self.scheduler))
 
         # ไม่ใส่ cluster = ทำงานเครื่องเดียว ซึ่งเป็นค่าเริ่มต้นและไม่ต้องพึ่งอะไรเลย
         self.cluster = cluster
@@ -121,12 +207,66 @@ class Hub:
 
     # ── ทางเข้าจาก transport ────────────────────────────────────────────────
 
+    def node_status(self) -> dict[str, Any]:
+        """สภาพของโหนดนี้ รวมชื่อโหนดและสถานะคลัสเตอร์
+
+        แยกจาก stats() ตรง ๆ เพราะตอนกระจายหลายเครื่อง ต้องรู้ว่าตัวเลขที่เห็น
+        มาจากโหนดไหน ไม่งั้นเห็นสี่ค่าที่ไม่รู้ที่มาแล้วเอามากลบกัน
+        """
+        snapshot = self.stats
+        return {
+            "node": self.cluster.node_id if self.cluster is not None else "standalone",
+            "clustered": self.cluster is not None,
+            "clusterConnected": bool(self.cluster is not None and self.cluster.connected),
+            **snapshot,
+        }
+
+    def _allow_hello(self, connection: Connection) -> bool:
+        """จำกัดจำนวนครั้งที่ขอสร้าง session ใหม่
+
+        ผู้เล่นคนเดียวต้องการ session เดียว การเรียกซ้ำเกินไปแปลว่าเป็นการยิง
+        ไม่ใช่การใช้งานจริง เช่น สคริปต์ที่ต่อแล้วทิ้งเพื่อสร้าง session ทิ้งเปล่า
+        """
+        peer = self._peer_of(connection)
+        if self._hello_counter.allow(peer, HELLO_LIMIT, HELLO_WINDOW):
+            return True
+        connection.send({"type": "error", "code": "rate_limited"})
+        return False
+
+    def _allow_message(self, connection: Connection) -> bool:
+        """จำกัดความถี่ของข้อความ เพื่อกันการยิงรัวที่กินเวลาประมวลผล
+
+        ต่อสายไม่ใช่ต่อผู้เล่น เพราะผู้เล่นคนเดียวเปิดได้หลายแท็บ
+        และโหนดหนึ่งรับได้หลายคน ตัวจำกัดจริงอยู่ที่การเชื่อมต่อใน ws.py
+        """
+        if self._message_counter.allow(connection.id, MESSAGE_LIMIT, MESSAGE_WINDOW):
+            return True
+        # ตัดการเชื่อมต่อแทนที่จะส่ง error ซ้ำ ๆ เพราะ client ที่ยิงรัว
+        # ไม่ได้อ่าน error อยู่ดี และสายก็ยังกินทรัพยากรอยู่
+        logger.warning("ข้อความถี่เกินกำหนด ตัดการเชื่อมต่อ %s", connection.id)
+        connection.close()
+        return False
+
+    @staticmethod
+    def _peer_of(connection: Connection) -> str:
+        """IP ของผู้เล่น — ขาดไปได้ในเทสต์ที่ใช้การเชื่อมต่อปลอม"""
+        return str(getattr(connection, "peer", "unknown"))
+
     def handle(self, connection: Connection, message: Any) -> None:
+        # กันการยิงข้อความรัว ๆ ก่อนแตะตรรกะใด ๆ
+        # ข้อความหนึ่งบรรทัดเล็กมาก แต่การยิงเร็ว ๆ นาน ๆ กินทั้ง CPU และหน่วยความจำ
+        # ต้องอยู่ก่อนการตรวจรูปแบบด้วย ไม่งั้นการยิงขยะจะไม่ถูกจำกัดเลย
+        if not self._allow_message(connection):
+            return
         if not isinstance(message, dict) or not isinstance(message.get("type"), str):
             connection.send({"type": "error", "code": "invalid_message"})
             return
 
         kind = message["type"]
+        # hello โดยเฉพาะ ต้องจำกัดแยก เพราะแต่ละครั้งที่เรียกคือการสร้าง session ใหม่
+        # ถ้าไม่จำกัด ใครก็ยิง hello รัว ๆ เพื่อสร้าง session ทิ้งเปล่าได้ไม่จำกัด
+        if kind == "hello" and not self._allow_hello(connection):
+            return
         if kind == "hello":
             self._on_hello(connection, message)
             return
@@ -1668,7 +1808,12 @@ class Hub:
         return {pid for pid in ids if self._is_connected(pid) or pid in elsewhere}
 
     @property
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, Any]:
+        """จำนวนสิ่งที่โหนดนี้กำลังถืออยู่
+
+        ไม่ใช่หน้าจอ เป็นตัวเลขสำหรับผู้ดูแลระบบและการเตือนล่วงหน้า
+        ถ้าตัวไหนโตผิดปกติแปลว่ามีสิ่งที่ลืมปล่อย
+        """
         return {
             "sessions": len(self.sessions),
             "rooms": len(self.rooms),

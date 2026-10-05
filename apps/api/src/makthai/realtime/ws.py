@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from makthai.realtime.hub import Hub
+from makthai.realtime.hub import MAX_MESSAGE_BYTES, WS_POLICY_VIOLATION, ConnectionGate, Hub
 
 logger = logging.getLogger(__name__)
 _ids = itertools.count()
@@ -27,9 +27,11 @@ OUTBOX_LIMIT = 256
 
 
 class WebSocketConnection:
-    def __init__(self, socket: WebSocket) -> None:
+    def __init__(self, socket: WebSocket, peer: str = "unknown") -> None:
         self.id = f"ws_{next(_ids)}"
         self.session_id: str | None = None
+        #: IP ของผู้เล่น ใช้จำกัดจำนวนการเชื่อมต่อ
+        self.peer = peer
         self.socket = socket
         self.outbox: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=OUTBOX_LIMIT)
         self.closed = False
@@ -60,14 +62,27 @@ class WebSocketConnection:
             await self.socket.send_text(json.dumps(message, ensure_ascii=False))
 
 
-async def serve(socket: WebSocket, hub: Hub) -> None:
+async def serve(socket: WebSocket, hub: Hub, gate: ConnectionGate | None = None) -> None:
+    peer = socket.client.host if socket.client else "unknown"
+    gate = gate if gate is not None else ConnectionGate()
+
+    # ปฏิเสธตั้งแต่ก่อน accept ดีกว่ารับแล้วค่อยปิด
+    # เพราะตอนนี้ยังไม่ได้กินคิวส่งอะไรของใคร และ client รู้เร็วกว่า
+    if not gate.admit(peer):
+        await socket.close(code=WS_POLICY_VIOLATION)
+        return
+
     await socket.accept()
-    connection = WebSocketConnection(socket)
+    connection = WebSocketConnection(socket, peer)
     pump = asyncio.create_task(connection.pump())
 
     try:
         while True:
             raw = await socket.receive_text()
+            if len(raw) > MAX_MESSAGE_BYTES:
+                # ข้อความใหญ่ผิดปกติมาก ส่งต่อไปจะเป็นการกินหน่วยความจำของโหนด
+                connection.send({"type": "error", "code": "message_too_large"})
+                continue
             try:
                 message = json.loads(raw)
             except json.JSONDecodeError:
@@ -84,3 +99,4 @@ async def serve(socket: WebSocket, hub: Hub) -> None:
         hub.disconnect(connection)
         connection.close()
         pump.cancel()
+        gate.release(peer)

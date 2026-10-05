@@ -48,6 +48,10 @@ MESSAGES: dict[str, dict[Locale, str]] = {
     "invalid_message": {"th": "ข้อความไม่ถูกต้อง", "en": "Malformed message"},
     "not_json": {"th": "ข้อความไม่ใช่ JSON ที่ถูกต้อง", "en": "Message is not valid JSON"},
     "no_session": {"th": "ยังไม่ได้เริ่มการเชื่อมต่อ", "en": "No session yet"},
+    "message_too_large": {
+        "th": "ข้อความยาวเกินกำหนด",
+        "en": "Message is too large",
+    },
     "unknown_command": {"th": "ไม่รู้จักคำสั่ง {action}", "en": "Unknown command {action}"},
     "server_error": {"th": "เซิร์ฟเวอร์ผิดพลาด", "en": "Server error"},
     "protocol_mismatch": {

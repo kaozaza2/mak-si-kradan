@@ -128,6 +128,8 @@ class LocalCluster:
         self.peers: dict[str, LocalCluster] = peers if peers is not None else {}
         self.peers[self.node_id] = self
         self._handler: Any = None
+        #: จำลองการหลุดของคลัสเตอร์ ใช้ตอนเทสต์ readiness probe
+        self._connected = True
 
     def join(self, node_id: str | None = None) -> LocalCluster:
         """สร้างอีกโหนดที่ต่ออยู่ในคลัสเตอร์เดียวกัน"""
@@ -159,7 +161,8 @@ class LocalCluster:
     @property
     def connected(self) -> bool:
         # คลัสเตอร์ในโปรเซสเดียวไม่มีทางหลุด มันคือ dict ในหน่วยความจำ
-        return True
+        # ยกเว้นตอนเทสต์ตั้ง _connected = False เพื่อจำลองว่าคลัสเตอร์หาย
+        return self._connected
 
 
 class RedisCluster:
