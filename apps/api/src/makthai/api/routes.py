@@ -6,15 +6,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from makthai import PROTOCOL_VERSION
-from makthai.api.schemas import ConfigResponse, GameListResponse, GameSummary, HealthResponse
+from makthai.api.schemas import (
+    ConfigResponse,
+    DependencyStatus,
+    GameListResponse,
+    GameSummary,
+    HealthResponse,
+    ReadyResponse,
+)
 from makthai.auth import sign_token, verify_token
 from makthai.config import get_settings
 from makthai.games import registry
@@ -25,6 +33,20 @@ from makthai.services.friends import Friends
 from makthai.services.verification import Verification
 
 API_VERSION = 1
+
+#: เพดานจำนวนรายการที่ endpoint รายการจะคืน
+#: ค่า limit ที่ client ส่งมาเป็นตัวเลขอิสระ ถ้าไม่จำกัดก็ยิงมาครั้งเดียวด้วยเลขใหญ่ ๆ
+#: แล้วให้ฐานข้อมูลทำงานหนักโดยไม่ได้อะไรกลับมา ขอบเขตนี้พอกับที่หน้าจอใช้จริง
+MAX_PAGE_SIZE = 100
+
+#: ความยาวสูงสุดของคำค้นที่รับได้
+#: คำค้นยาวมากไม่ได้ทำให้ผลดีขึ้น แต่ทำให้ต้องแปะงานเยอะทุกครั้ง
+MAX_QUERY_LENGTH = 64
+
+#: ตรวจ dependency ได้นานเท่าไรก่อนถือว่าไม่ตอบ
+#: ต้องสั้นกว่า timeout ของ probe ที่ orchestrator ตั้งไว้
+#: ไม่งั้นถ้าฐานข้อมูลค้าง เราจะช้ากว่าที่มันควรตอบว่าไม่พร้อม
+PROBE_TIMEOUT = 3.0
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -48,7 +70,17 @@ class RateLimiter:
 
     ตั้ง redis_url เมื่อไหร่จะนับรวมกันทั้งคลัสเตอร์ ไม่งั้นโควตาจะคูณตามจำนวนเครื่อง
     ซึ่งเท่ากับไม่ได้จำกัดอะไรเลยเมื่อกระจายหลายโหนด
+
+    ตัวนับในเครื่องเก็บเป็น dict ที่คีย์มาจาก IP ของผู้เรียก ซึ่งผู้โจมตีควบคุมได้
+    ถ้าไม่กวาดทิ้ง ใครส่ง request จาก IP ใหม่ทุกครั้งก็ทำให้หน่วยความจำโตไม่จำกัด
+    จึงต้องล้างรายการที่หมดอายุแล้วออกเป็นระยะ ไม่ใช่รอให้โดน OOM
     """
+
+    #: เกินจำนวนนี้แล้วล้างรายการที่หมดอายุทิ้งก่อนบันทึกคีย์ใหม่
+    SWEEP_AT = 4096
+    #: คีย์ที่ยังไม่หมดอายุแต่โตถึงขีดนี้ = ยุ่งจนใช้หน่วยความจำมากเกินไป
+    #: ตัดทิ้งทั้งหมดแทนที่จะปล่อยให้ตัวแรกที่เข้ามาได้ไม่จำกัด
+    MAX_KEYS = 65536
 
     def __init__(self, redis_url: str = "") -> None:
         self.redis_url = redis_url
@@ -66,12 +98,24 @@ class RateLimiter:
 
     def _allow_local(self, key: str, limit: int, window: float) -> bool:
         now = time.monotonic()
+        if len(self._hits) >= self.SWEEP_AT:
+            self._sweep(now)
+        if len(self._hits) >= self.MAX_KEYS:
+            # ทุกคีย์ยังไม่หมดอายุ แปลว่าโดนยิงจริง ไม่ใช่แค่คีย์ค้าง
+            # เคลียร์ทั้งก้อนดีกว่าปล่อยให้โดนไม่จำกัด เพราะยอมให้ถูกยิงเพิ่ม
+            # แต่ไม่ยอมให้กินหน่วยความจำจนพังตัวเซิร์ฟเวอร์
+            logger.warning("ตัวนับโควตาเต็ม %d คีย์ ล้างทิ้งทั้งหมด", self.MAX_KEYS)
+            self._hits.clear()
         count, reset_at = self._hits.get(key, (0, 0.0))
         if reset_at < now:
             self._hits[key] = (1, now + window)
             return True
         self._hits[key] = (count + 1, reset_at)
         return count + 1 <= limit
+
+    def _sweep(self, now: float) -> None:
+        """ทิ้งรายการที่หมดอายุแล้ว — คีย์ที่ยังนับอยู่ต้องเก็บไว้"""
+        self._hits = {key: hit for key, hit in self._hits.items() if hit[1] >= now}
 
     async def _allow_shared(self, key: str, limit: int, window: float) -> bool | None:
         try:
@@ -108,7 +152,58 @@ async def allow(request: Request, key: str, limit: int, window: float) -> bool:
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])
 async def health() -> HealthResponse:
+    """ตอบว่ากระบวนการยังยังอยู่ — ใช้เป็น liveness probe
+
+    ตั้งใจไม่แตะฐานข้อมูลหรือ Redis เพราะถ้า dependency สั่น
+    แต่แอปยังไม่ตาย การดันก็ควรให้โอกาสฟื้นก่อน
+    การตรวจว่ารับงานได้จริงอยู่ที่ /ready
+    """
     return HealthResponse(ok=True, app=get_settings().app_name, games=len(registry))
+
+
+@router.get("/ready", response_model=ReadyResponse, tags=["system"])
+async def ready(request: Request) -> Any:
+    """ตอบว่าโหนดนี้รับงานใหม่ได้หรือยัง — ใช้เป็น readiness probe
+
+    คืน 503 เมื่อ dependency ที่จำเป็นใช้ไม่ได้ เพื่อให้ load balancer
+    หยุดส่งผู้เล่นมาที่โหนดนี้ แต่ยังไม่ต้องรีสตาร์ต
+    """
+    database = request.app.state.database
+    db_status = await _probe_database(database)
+    cluster = request.app.state.hub.cluster
+    cluster_status = _probe_cluster(cluster)
+    ok = db_status.ok and cluster_status.ok
+    return JSONResponse(
+        ReadyResponse(ok=ok, database=db_status, cluster=cluster_status).model_dump(
+            by_alias=True
+        ),
+        status_code=200 if ok else 503,
+    )
+
+
+async def _probe_database(database: Any) -> DependencyStatus:
+    """ยิงคำสั่งจริงหนึ่งครั้ง ไม่ใช่แค่ดูว่าตัวแปรถูกตั้ง
+
+    ข้อความบอกเหตุผลเป็นชื่อคลาสข้อผิดพลาดเท่านั้น ไม่ใส่รายละเอียดของการเชื่อมต่อ
+    เพราะ endpoint นี้เปิดสาธารณะ ข้อความที่ละเอียดอาจบอกที่อยู่หรือชนิดฐานข้อมูลไปเปิดเผย
+    """
+    if database is None:
+        # ไม่ได้ต่อฐานข้อมูลก็เล่นได้ครบทุกอย่าง แค่ไม่มีบัญชีและอันดับ จึงพร้อมใช้งาน
+        return DependencyStatus(ok=True, detail="not_configured")
+    try:
+        await asyncio.wait_for(database.ping(), timeout=PROBE_TIMEOUT)
+    except TimeoutError:
+        return DependencyStatus(ok=False, detail="timeout")
+    except Exception as error:
+        return DependencyStatus(ok=False, detail=type(error).__name__)
+    return DependencyStatus(ok=True, detail="ok")
+
+
+def _probe_cluster(cluster: Any) -> DependencyStatus:
+    if cluster is None:
+        # ไม่ได้ตั้ง Redis = ทำงานโหนดเดียว ซึ่งเป็นการตั้งค่าที่ถูกต้อง
+        return DependencyStatus(ok=True, detail="single_node")
+    return DependencyStatus(ok=cluster.connected, detail="ok" if cluster.connected else "down")
 
 
 @router.get("/api/v1/config", response_model=ConfigResponse, tags=["system"])
@@ -201,6 +296,13 @@ async def login(request: Request) -> Any:
 
     body = await _json(request)
     identifier = str(body.get("email") or body.get("username") or "")
+    # จำกัดเฉพาะบัญชีที่กำลังถูกยิง ไม่ใช่ทั้ง IP
+    # เพราะผู้โจมตีที่มี IP หลายเครื่องยิงผ่านข้อจำกัดราย IP ได้ แต่ถ้าล็อกตามชื่อบัญชี
+    # เขาจะต้องแตะบัญชีนั้นถึงจะเดาได้ ทำให้เหลือแค่การโจมตีแบบกระจายที่แพงขึ้นมาก
+    # ข้อความตอบเหมือนกันหมดเพื่อไม่ให้บอกว่าบัญชีนี้มีอยู่จริงหรือเปล่า
+    if identifier and not await allow(request, f"login_account:{identifier.lower()}", 10, 900):
+        return fail("rate_limited", 429)
+
     async with database.session() as session:
         result = await Accounts(session).login(identifier, str(body.get("password", "")))
     if not result.ok or result.user is None:
@@ -224,7 +326,9 @@ async def me(request: Request) -> Any:
 
 
 @router.get("/api/v1/leaderboard", tags=["accounts"])
-async def leaderboard(request: Request, limit: int = 50) -> Any:
+async def leaderboard(
+    request: Request, limit: Annotated[int, Query(50, ge=1, le=MAX_PAGE_SIZE)]
+) -> Any:
     database = request.app.state.database
     if database is None:
         return {"leaderboard": []}
@@ -233,10 +337,12 @@ async def leaderboard(request: Request, limit: int = 50) -> Any:
 
 
 @router.get("/api/v1/players/search", tags=["accounts"])
-async def search_players(request: Request, q: str = "") -> Any:
+async def search_players(request: Request, q: Annotated[str, Query(max_length=MAX_QUERY_LENGTH)]) -> Any:
     identity = identity_of(request)
     if identity is None:
         return fail("unauthorized", 401)
+    if not await allow(request, "search", 30, 60):
+        return fail("rate_limited", 429)
     database = request.app.state.database
     if database is None:
         return {"players": []}
@@ -245,7 +351,11 @@ async def search_players(request: Request, q: str = "") -> Any:
 
 
 @router.get("/api/v1/players/{player_id}/matches", tags=["accounts"])
-async def player_matches(request: Request, player_id: str, limit: int = 20) -> Any:
+async def player_matches(
+    request: Request,
+    player_id: str,
+    limit: Annotated[int, Query(20, ge=1, le=MAX_PAGE_SIZE)],
+) -> Any:
     history = request.app.state.history
     if history is None:
         return {"matches": []}
@@ -389,6 +499,8 @@ async def request_friend(request: Request) -> Any:
     database = request.app.state.database
     if database is None:
         return fail("accounts_disabled", 400)
+    if not await allow(request, "friend_request", 20, 300):
+        return fail("rate_limited", 429)
 
     body = await _json(request)
     async with database.session() as session:

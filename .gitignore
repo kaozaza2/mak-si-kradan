@@ -10,8 +10,24 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
 *.log
 .DS_Store
+
+# ฐานข้อมูล SQLite ของเครื่องนักพัฒนา
+# ไฟล์นี้มีแฮชรหัสผ่านและอีเมลของผู้เล่นจริง ไม่เคยต้องอยู่ใน git
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ผลลัพธ์ของ tsc — สร้างใหม่ได้เสมอ อย่าต้องเก็บ
+*.tsbuildinfo
+
+# ค่าตั้งจริงของแต่ละเครื่องและแต่ละสภาพแวดล้อม
+# เก็บแต่ตัวอย่างไว้อย่างเดียว ใน .env.example
 .env
 .env.*
 !.env.example

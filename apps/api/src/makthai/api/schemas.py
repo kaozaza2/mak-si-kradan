@@ -50,3 +50,24 @@ class HealthResponse(BaseModel):
     ok: bool
     app: str
     games: int
+
+
+class DependencyStatus(BaseModel):
+    ok: bool
+    #: เหตุผลอย่างสั้น ๆ ว่าพร้อมทำงานหรือยัง — ตัวเลขเวลาแทนคำอธิบายยาว ๆ
+    detail: str = ""
+
+
+class ReadyResponse(BaseModel):
+    """ผลของการตรวจว่าโหนดนี้รับงานได้จริงหรือยัง
+
+    แยกจาก /health เพราะ /health ตอบว่า "กระบวนการยังยัง" ซึ่งไม่ได้แปลว่า
+    ใช้งานได้ ถ้าฐานข้อมูลหรือ Redis ล่ม โหนดนี้ก็รับงานใหม่ไม่ได้
+    แต่ยังตอบ /health ได้ว่ารอด เพื่อไม่ให้โหนดที่ไม่พร้อมถูกดันซ้ำ ๆ
+    """
+
+    ok: bool
+    database: DependencyStatus
+    cluster: DependencyStatus
+
+    model_config = {"populate_by_name": True}

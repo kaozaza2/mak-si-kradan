@@ -10,6 +10,7 @@ export default defineConfig({
       // ให้เว็บกับ API อยู่ origin เดียวกันตอน dev จะได้ไม่ต้องยุ่งกับ CORS
       "/api": { target: "http://localhost:8000", changeOrigin: true },
       "/health": { target: "http://localhost:8000", changeOrigin: true },
+      "/ready": { target: "http://localhost:8000", changeOrigin: true },
       "/ws": { target: "ws://localhost:8000", ws: true },
     },
   },

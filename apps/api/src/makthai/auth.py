@@ -16,7 +16,17 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
+#: ความยาวขั้นต่ำของ AUTH_SECRET ที่ยอมรับได้
+#: ต้องยาวพอให้เดายาก และเท่ากันทุก node ไม่งั้น token ข้ามเครื่องไม่ผ่าน
+#: อยู่ในไฟล์นี้เพราะ auth ต้องใช้ และไฟล์นี้ต้องไม่พึ่ง pydantic
+#: เพื่อให้ทดสอบส่วนนี้ได้โดยไม่ต้องติดตั้ง dependency ทั้งหมด
+MIN_AUTH_SECRET = 32
+
 TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
+
+#: อายุโทเคนของผู้เล่นชั่วคราว — สั้นกว่าเพราะไม่มีอะไรต้องรักษาไว้
+#: ถ้าหลุดก็แค่ได้คนใหม่ ต่างจากบัญชีที่มีอันดับและประวัติผูกอยู่
+GUEST_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 
 Kind = Literal["guest", "user"]
 
@@ -118,7 +128,7 @@ def resolve_secret(configured: str) -> tuple[str, bool]:
     ไม่ตั้งไว้แล้วสุ่มใหม่ทุกครั้งที่รีสตาร์ต แปลว่าทุกคนหลุดล็อกอิน
     และหลาย node จะตรวจ token ของกันและกันไม่ได้
     """
-    if configured and len(configured) >= 16:
+    if configured and len(configured) >= MIN_AUTH_SECRET:
         return configured, False
     return secrets.token_hex(32), True
 

@@ -34,6 +34,8 @@ CHANNEL_PREFIX = "makthai"
 SNAPSHOT_INTERVAL = 10.0
 #: ไม่ได้ยินจากโหนดไหนนานกว่านี้ถือว่าตายแล้ว ลบสำเนาของมันทิ้ง
 PEER_TIMEOUT = 35.0
+#: หยุดก่อนลองต่อ Redis ใหม่ ไม่ต้องถี่เพราะจะเป็นการถี่ขยะกับ Redis ที่กำลังฟื้น
+RECONNECT_DELAY = 1.0
 
 
 @dataclass(slots=True)
@@ -107,6 +109,11 @@ class Cluster(Protocol):
 
     async def stop(self) -> None: ...
 
+    @property
+    def connected(self) -> bool:
+        """ต่อคลัสเตอร์อยู่หรือยัง — ใช้ตัดสินว่าโหนดรับงานใหม่ได้ไหม"""
+        ...
+
 
 class LocalCluster:
     """คลัสเตอร์ในโปรเซสเดียว
@@ -149,6 +156,11 @@ class LocalCluster:
     async def stop(self) -> None:
         self.peers.pop(self.node_id, None)
 
+    @property
+    def connected(self) -> bool:
+        # คลัสเตอร์ในโปรเซสเดียวไม่มีทางหลุด มันคือ dict ในหน่วยความจำ
+        return True
+
 
 class RedisCluster:
     """คุยกันผ่าน Redis pub/sub
@@ -171,6 +183,9 @@ class RedisCluster:
         self._handler: Any = None
         self._redis: Any = None
         self._tasks: list[asyncio.Task[None]] = []
+        #: ฟังอยู่จริงหรือไม่ และส่งออกได้จริงหรือไม่ ต้องดูทั้งสองทาง
+        self._listening = False
+        self._pumping = False
 
     @property
     def direct_channel(self) -> str:
@@ -179,6 +194,14 @@ class RedisCluster:
     @property
     def fanout_channel(self) -> str:
         return f"{self.prefix}:all"
+
+    @property
+    def connected(self) -> bool:
+        """Redis ยังใช้ได้อยู่หรือไม่ — ใช้ตัดสินว่าโหนดรับงานใหม่ได้ไหม
+
+        ต้องดูว่าทั้งสองทางยังวิ่งอยู่ เพราะฟังได้แต่ส่งไม่ออกก็ถือว่าใช้ไม่ได้
+        """
+        return self._listening and self._pumping
 
     def publish(self, node: str, envelope: dict[str, Any]) -> None:
         self._enqueue(f"{self.prefix}:node:{node}", envelope)
@@ -215,26 +238,69 @@ class RedisCluster:
             channel, envelope = await self.outbox.get()
             try:
                 await self._redis.publish(channel, json.dumps(envelope, ensure_ascii=False))
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logger.exception("ส่งข้อความข้ามโหนดไม่สำเร็จ")
+                # Redis สั่นเป็นเรื่องปกติของระบบกระจาย ไม่ใช่เหตุของจบโปรเซส
+                # ต้องไม่ให้งานนี้ตาย ไม่งั้นข้อความจะทิ้งต่อไปเรื่อย ๆ ตลอดชีวิตโหนด
+                self._pumping = False
+                logger.warning("ส่งข้อความข้ามโหนดไม่สำเร็จ รอ Redis กลับมา %.1f วินาที", RECONNECT_DELAY)
+                await asyncio.sleep(RECONNECT_DELAY)
+                self._requeue(channel, envelope)
+            else:
+                self._pumping = True
+
+    def _requeue(self, channel: str, envelope: dict[str, Any]) -> None:
+        """เอาข้อความที่ส่งไม่สำเร็จกลับเข้าคิว
+
+        ถ้าคิวเต็มจริง ๆ ก็ทิ้งข้อความนี้ทิ้ง เพราะการทิ้งคิวแล้วยังดีกว่าปล่อยให้
+        put_nowait โยน QueueFull ออกมาแล้วฆ่างานนี้ตายซ้ำอีกรอบ
+        """
+        try:
+            self.outbox.put_nowait((channel, envelope))
+        except asyncio.QueueFull:
+            logger.warning("คิวส่งข้ามโหนดเต็ม ทิ้งข้อความไปยัง %s", channel)
 
     async def _listen(self) -> None:
-        pubsub = self._redis.pubsub()
-        await pubsub.subscribe(self.direct_channel, self.fanout_channel)
-        async for message in pubsub.listen():
-            if message.get("type") != "message":
-                continue
+        while True:
             try:
-                envelope = json.loads(message["data"])
-            except (ValueError, TypeError):
-                continue
-            # ประกาศแบบกระจายวนกลับมาหาตัวเองด้วย ข้ามไป
-            if not isinstance(envelope, dict) or envelope.get("from") == self.node_id:
-                continue
-            try:
-                self._handler(envelope)
+                await self._listen_once()
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logger.exception("จัดการข้อความข้ามโหนดไม่สำเร็จ")
+                # การฟังหลุดแล้วต้องต่อใหม่เอง ไม่งั้นโหนดนี้จะยังรันอยู่แต่ไม่รู้ว่า
+                # มีโหนดอื่นอยู่หรือมีผู้เล่นอีกเครื่องกำลังรออยู่ — ซึ่งแย่กว่าการตายไปเฉย ๆ
+                self._listening = False
+                logger.warning("ฟัง Redis ไม่สำเร็จ ต่อใหม่ใน %.1f วินาที", RECONNECT_DELAY)
+                await asyncio.sleep(RECONNECT_DELAY)
+
+    async def _listen_once(self) -> None:
+        pubsub = self._redis.pubsub()
+        try:
+            await pubsub.subscribe(self.direct_channel, self.fanout_channel)
+            # การต่อกลับมาแล้วต้องประกาศภาพรวมของตัวเองใหม่ มิฉะนั้นโหนดที่เพิ่งมา
+            # จะไม่เห็นห้องของเราจนกว่ารอบประกาศถัดไป
+            self._listening = True
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                try:
+                    envelope = json.loads(message["data"])
+                except (ValueError, TypeError):
+                    continue
+                # ประกาศแบบกระจายวนกลับมาหาตัวเองด้วย ข้ามไป
+                if not isinstance(envelope, dict) or envelope.get("from") == self.node_id:
+                    continue
+                try:
+                    self._handler(envelope)
+                except Exception:
+                    logger.exception("จัดการข้อความข้ามโหนดไม่สำเร็จ")
+        finally:
+            self._listening = False
+            try:
+                await pubsub.aclose()
+            except Exception:
+                logger.debug("ปิด pubsub ไม่สำเร็จ", exc_info=True)
 
 
 class RemoteConnection:
@@ -270,6 +336,7 @@ def create_cluster(
 
 __all__ = [
     "PEER_TIMEOUT",
+    "RECONNECT_DELAY",
     "SNAPSHOT_INTERVAL",
     "Cluster",
     "LocalCluster",

@@ -39,6 +39,18 @@ from makthai.realtime.room import Room
 from makthai.realtime.scheduler import AsyncioScheduler, Scheduler
 from makthai.realtime.session import Connection, Session
 
+#: ผู้เล่นที่หลุดไปแล้วเก็บไว้นานเท่าไร ก่อนลืมทิ้ง
+#: ต้องยาวพอให้เขากลับมาได้ เช่น เปลี่ยนเน็ต ปิดเบราว์เซอร์ค้างไว้ หรือเดินออกจากเกมชั่วคราว
+#: ตัวเลขนี้คือเวลาที่กลับมาแล้ว "ยังอยู่ในห้องเดิม" ได้ ยิ่งยาวไว้ก็ยิ่งกินหน่วยความจำ
+SESSION_TTL = 300.0
+
+#: เกมที่จบแล้วเก็บผลไว้ให้ดูนานเท่าไร ก่อนปล่อย engine ทิ้ง
+#: ระหว่างนี้ผู้เล่นยังดูผลได้และกดขอเล่นใหม่ได้
+FINISHED_MATCH_TTL = 600.0
+
+#: ตรวจหาสิ่งที่ค้างทุกกี่วินาที
+REAP_INTERVAL = 60.0
+
 
 class MatchSink(Protocol):
     """ที่รับผลการเล่นไปเก็บ
@@ -66,6 +78,9 @@ class Hub:
         bot_step_delay: float = 0.6,
         autopilot_grace: float = 15.0,
         autopilot_level: str = "normal",
+        session_ttl: float = SESSION_TTL,
+        finished_match_ttl: float = FINISHED_MATCH_TTL,
+        reap_interval: float = REAP_INTERVAL,
         rng: random.Random | None = None,
         sink: MatchSink | None = None,
         cluster: Cluster | None = None,
@@ -78,6 +93,9 @@ class Hub:
         self.bot_step_delay = bot_step_delay
         self.autopilot_grace = autopilot_grace
         self.autopilot_level = autopilot_level
+        self.session_ttl = session_ttl
+        self.finished_match_ttl = finished_match_ttl
+        self.reap_interval = reap_interval
         self._rng = rng or random.Random()
         # ที่บันทึกประวัติ — ไม่ใส่ก็เล่นได้ครบ แค่ไม่เก็บอะไรไว้
         self.sink = sink
@@ -88,6 +106,7 @@ class Hub:
         self.matches: dict[str, Match] = {}
         self.queues: dict[str, list[str]] = {}
         self._autopilot_timers: dict[str, Any] = {}
+        self._reaper: Any = None
 
         # ไม่ใส่ cluster = ทำงานเครื่องเดียว ซึ่งเป็นค่าเริ่มต้นและไม่ต้องพึ่งอะไรเลย
         self.cluster = cluster
@@ -116,7 +135,7 @@ class Hub:
         if session is None:
             connection.send({"type": "error", "code": "no_session"})
             return
-        session.last_seen = time.monotonic()
+        session.last_seen = self.scheduler.now()
 
         if session.home:
             # ชื่ออยู่กับโหนดที่ถือ socket เสมอ แล้วติดไปกับซองทุกใบ
@@ -150,7 +169,7 @@ class Hub:
 
     def _went_offline(self, session: Session) -> None:
         """ผู้เล่นไม่มีการเชื่อมต่อเหลือแล้ว ไม่ว่าจะหลุดจากเครื่องนี้หรือจากเครื่องอื่น"""
-        session.last_seen = time.monotonic()
+        session.last_seen = self.scheduler.now()
         self._leave_queue(session)
         if session.room_id:
             self._on_leave_room(session, {}, silent=True)
@@ -196,7 +215,7 @@ class Hub:
 
         connection.session_id = session.id
         session.connections.add(connection)
-        session.last_seen = time.monotonic()
+        session.last_seen = self.scheduler.now()
 
         connection.send(
             {
@@ -940,6 +959,9 @@ class Hub:
     def _finish_match(self, match: Match) -> None:
         match.clear_clock()
         match.clear_bot()
+        # จดว่าจบแล้ว เพื่อให้ตัวเก็บกวาดรู้ว่าจะปล่อยเมื่อไร
+        # ยังไม่ทิ้งทันที เพราะผู้เล่นยังดูผลและขอเล่นใหม่ได้
+        match.mark_finished(self.scheduler.now())
         self._broadcast_state(match)
         result = match.engine.result
         if self.sink is not None and result is not None:
@@ -1131,10 +1153,17 @@ class Hub:
         return bool(session and session.connections)
 
     def _has_human_presence(self, match: Match) -> bool:
+        """ยังมีคนที่เป็นมนุษย์และยังอยู่ในเกมนี้อยู่จริงหรือไม่
+
+        "อยู่ในเกม" คือยังผูกกับแมตช์นี้อยู่ ไม่ใช่แค่มีการเชื่อมต่ออยู่
+        เพราะหลังจบเกมผู้เล่นยังนั่งดูหน้าสรุปผลอยู่ ถ้านับว่ายังอยู่ในเกม
+        เกมที่จบแล้วก็จะไม่ถูกปล่อยจนกว่าทุกคนจะออกไป ซึ่งไม่เกิดถ้าใครเปิดหน้านั้นค้างไว้
+        """
         return any(
             (session := self.sessions.get(pid)) is not None
             and not session.is_bot
             and session.match_id == match.id
+            and session.connections
             for pid in match.player_ids
         )
 
@@ -1253,6 +1282,8 @@ class Hub:
 
     async def start(self) -> None:
         """เรียกตอนแอปเริ่ม — ต้องมี event loop แล้วถึงจะตั้งงานตามเวลาได้"""
+        # เก็บกวาดต้องทำงานเสมอ ไม่ว่าจะมีคลัสเตอร์หรือไม่
+        self._schedule_reap()
         if self.cluster is None:
             return
         await self.cluster.start()
@@ -1263,12 +1294,75 @@ class Hub:
             self.cluster.broadcast({"kind": "bye"})
             await self.cluster.stop()
 
+    # ── เก็บกวาดสิ่งที่ค้างในหน่วยความจำ ─────────────────────────────────────
+
+    def _schedule_reap(self) -> None:
+        if self._reaper is not None:
+            return
+        self._reaper = self.scheduler.call_later(self.reap_interval, self._reap)
+
+    def _reap(self) -> None:
+        """ปล่อยของที่ไม่มีใครใช้แล้ว
+
+        ทั้ง session และ match เก็บในหน่วยความจาระดับตลอดชีวิตโหนด ถ้าไม่มีที่นี่
+        โหนดที่รันนาน ๆ จะโตไม่จำกัดตามจำนวนผู้เล่นที่ผ่านมาทั้งหมด ไม่ใช่ตามคนที่กำลังออนไลน์
+        """
+        self._reaper = None
+        self._reap_sessions()
+        self._reap_finished_matches()
+        self._schedule_reap()
+
+    def _reap_sessions(self) -> int:
+        """ลืมผู้เล่นที่หลุดไปนานแล้วและไม่ได้อยู่ในห้อง ในคิว หรือในแมตช์
+
+        เงื่อนไข "ยังไม่ว่าง" สำคัญที่สุด เพราะผู้เล่นที่หลุดจากเกมแล้วยังมีนาฬิกาเดิน
+        และมี AI คุมแทนอยู่ ต้องเก็บไว้จนกว่าจะออกจากเกมจริง ๆ
+        """
+        now = self.scheduler.now()
+        expired = [
+            session
+            for session in self.sessions.values()
+            if not session.connections
+            and session.home is None
+            and session.room_id is None
+            and session.match_id is None
+            and session.queued_game is None
+            and not session.is_bot
+            and now - session.last_seen > self.session_ttl
+        ]
+        for session in expired:
+            # ถอนออกจากคิวด้วยเผื่อค้างจากกรณีผิดปกติ
+            self._leave_queue(session)
+            self.sessions.pop(session.id, None)
+        return len(expired)
+
+    def _reap_finished_matches(self) -> int:
+        """ปล่อยแมตช์ที่จบแล้วและไม่มีคนอยู่ต่อแล้ว
+
+        ไม่ใช่แค่รอจนไม่มีคนอยู่ เพราะผู้เล่นที่ดูผลอยู่บนหน้าสรุปผลนับเป็นคนอยู่
+        เขายังกดขอเล่นใหม่ได้ แต่พอครบเวลาที่เก็บผลไว้ก็ต้องปล่อย
+        มิฉะนั้นแมตช์ที่จบแล้วจะอยู่ตลอดชีวิตโหนดตราบที่ผู้เล่นไม่ออกจากเกม
+        """
+        now = self.scheduler.now()
+        stale = [
+            match
+            for match in self.matches.values()
+            if match.finished
+            and (
+                not self._has_human_presence(match)
+                or now - (match.finished_at or 0.0) > self.finished_match_ttl
+            )
+        ]
+        for match in stale:
+            self._dispose_match(match)
+        return len(stale)
+
     def _heartbeat(self) -> None:
         """ประกาศซ้ำเป็นระยะ เผื่อโหนดที่เพิ่งขึ้นมาพลาดรอบก่อน และเก็บกวาดโหนดที่ตายไป"""
         stale = [
             node
             for node, peer in self.peers.items()
-            if time.monotonic() - peer.heard_at > PEER_TIMEOUT
+            if self.scheduler.now() - peer.heard_at > PEER_TIMEOUT
         ]
         for node in stale:
             self._forget_peer(node)
@@ -1399,7 +1493,7 @@ class Hub:
 
     def _env_snapshot(self, sender: str, envelope: dict[str, Any]) -> None:
         snapshot = Snapshot.from_dict(envelope.get("snapshot") or {})
-        snapshot.heard_at = time.monotonic()
+        snapshot.heard_at = self.scheduler.now()
         previous = self.peers.get(sender)
         self.peers[sender] = snapshot
         if previous is not None and previous.as_dict() == snapshot.as_dict():
@@ -1430,7 +1524,7 @@ class Hub:
                 }
             )
             return
-        session.last_seen = time.monotonic()
+        session.last_seen = self.scheduler.now()
         handler(session, message)
 
     def _env_attach(self, sender: str, envelope: dict[str, Any]) -> None:
