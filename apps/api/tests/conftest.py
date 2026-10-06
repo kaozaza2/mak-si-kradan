@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -67,7 +68,9 @@ async def open_test_database() -> AsyncIterator[Database]:
         # connection pool เปิดการเชื่อมต่อใหม่ได้ตลอด ถ้าตั้งแค่ครั้งเดียว
         # การเชื่อมต่อที่สองจะกลับไปใช้ schema ของ public และเจอข้อมูลของเทสต์อื่น
         event.listen(db.engine.sync_engine, "connect", _use_schema(schema))
-        await _run_sql(db, f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        # ใช้ connection แยกจาก pool เพื่อสร้าง schema
+        # เพราะ search_path ที่ตั้งไว้ชี้ไปยัง schema ที่ยังไม่มีอยู่จริง
+        await _run_sql(db, f'CREATE SCHEMA IF NOT EXISTS "{schema}"', fresh=True)
     try:
         await db.create_all()
     finally:
@@ -97,24 +100,32 @@ def _use_schema(schema: str) -> Any:
 
 
 async def _drop_schema(db: Database, schema: str) -> None:
-    """ลบ schema ของเทสต์ทิ้ง เพื่อไม่ให้ตารางค้างรอบหลัง"""
+    """ลบ schema ของเทสต์ทิ้ง เพื่อไม่ให้ตารางค้างรอบหลัง
+
+    ล้มเหลวตอนล้างไม่ควรทำให้เทสต์ที่ผ่านแล้วกลายเป็นล้ม
+    ข้อมูลที่ค้างอยู่ไม่กระทบรอบถัดไป เพราะใช้ชื่อ schema สุ่มใหม่ทุกครั้ง
+    """
     if not schema:
         return
-    try:
+    with contextlib.suppress(Exception):
         await _run_sql(db, f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-    except Exception:
-        # ล้มเหลวตอนล้างไม่ควรทำให้เทสต์ที่ผ่านแล้วกลายเป็นล้ม
-        # ข้อมูลที่ค้างอยู่ไม่กระทบรอบถัดไป เพราะใช้ชื่อ schema สุ่มใหม่ทุกครั้ง
-        pass
 
 
-async def _run_sql(db: Database, statement: str) -> None:
+async def _run_sql(db: Database, statement: str, fresh: bool = False) -> None:
     """รันคำสั่ง SQL ดิบ
 
     นำเข้า text ข้างใน เพื่อให้ไฟล์นี้โหลดได้แม้ยังไม่ได้ติดตั้ง sqlalchemy
+
+    fresh คือใช้การเชื่อมต่อใหม่ที่ไม่ผ่าน pool ไม่งั้น connection จะได้
+    search_path ของเทสต์นี้ไปแล้ว ซึ่งชี้ไปยัง schema ที่ยังไม่ได้สร้าง
     """
     from sqlalchemy import text
 
+    if fresh:
+        async with db.engine.connect() as connection:
+            await connection.execute(text(statement))
+            await connection.commit()
+        return
     async with db.engine.begin() as connection:
         await connection.execute(text(statement))
 
