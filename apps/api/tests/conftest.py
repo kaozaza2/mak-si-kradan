@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest_asyncio
 
@@ -46,10 +46,12 @@ def is_shared_database(url: str) -> bool:
 async def open_test_database() -> AsyncIterator[Database]:
     """เปิดฐานข้อมูลสำหรับเทสต์แล้วปิดและล้างเมื่อเสร็จ
 
-    นำเข้า Database ตรงนี้ไม่ได้เพราะ conftest ถูกโหลดก่อนทุกเทสต์
-    รวมถึงเทสต์กติกาเกมที่ไม่ต้องใช้ฐานข้อมูลเลย
-    การนำเข้าตรง ๆ จะทำให้เครื่องที่ยังไม่ได้ติดตั้ง sqlalchemy รันเทสต์เหล่านั้นไม่ได้
+    นำเข้า sqlalchemy และ Database ภายในฟังก์ชันนี้ ไม่ใช่ข้างบน
+    เพราะ conftest ถูกโหลดก่อนทุกเทสต์ รวมถึงเทสต์กติกาเกมที่ไม่ใช้ฐานข้อมูลเลย
+    ถ้านำเข้าข้างบน เครื่องที่ยังไม่ได้ติดตั้ง sqlalchemy จะรันเทสต์เหล่านั้นไม่ได้
     """
+    from sqlalchemy import event, text
+
     from makthai.db.session import Database
 
     url = base_test_database_url()
@@ -58,23 +60,43 @@ async def open_test_database() -> AsyncIterator[Database]:
         # แยกตารางให้แต่ละเทสต์ แล้วลบทิ้งเมื่อจบ
         # Postgres สร้าง schema แยกได้รวดเร็วกว่าสร้างฐานข้อมูลใหม่มาก
         schema = f"test_{uuid.uuid4().hex[:12]}"
-        url = f"{url}?options=-csearch_path%3D{schema}"
 
     db = Database(url)
-    # ใช้ create_all เพราะเทสต์ไม่ต้องพิสูจน์ว่า migration ถูกต้อง
-    # การตรวจเรื่องนั้นเป็นหน้าที่ของ alembic check ใน CI
-    await db.create_all()
-    yield db
-    await _drop_schema(db, schema)
-    await db.dispose()
+    if schema:
+        # ต้องตั้งทุกครั้งที่เปิดการเชื่อมต่อใหม่ ไม่ใช่ครั้งเดียวตอนสร้าง engine
+        # connection pool เปิดการเชื่อมต่อใหม่ได้ตลอด ถ้าตั้งแค่ครั้งเดียว
+        # การเชื่อมต่อที่สองจะกลับไปใช้ schema ของ public และเจอข้อมูลของเทสต์อื่น
+        event.listen(db.engine.sync_engine, "connect", _use_schema(schema))
+        async with db.engine.begin() as connection:
+            await connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+    try:
+        await db.create_all()
+    finally:
+        await _drop_schema(db, schema)
+        await db.dispose()
+
+
+def _use_schema(schema: str) -> Any:
+    """ตั้ง search_path ทุกครั้งที่เปิดการเชื่อมต่อใหม่
+
+    ต้องทำที่ระดับการเชื่อมต่อ ไม่ใช่แค่ครั้งเดียว เพราะ connection pool
+    เปิดการเชื่อมต่อใหม่ได้เมื่อไรก็ได้ และค่าที่ตั้งไว้จะอยู่แค่การเชื่อมต่อนั้น
+
+    ตั้งผ่านคำสั่ง SQL ไม่ใช่พารามิเตอร์ options ใน URL
+    เพราะ asyncpg ไม่รับพารามิเตอร์ระดับนั้น
+    """
+
+    def _connect(dbapi_connection: Any, _record: Any) -> None:
+        with dbapi_connection.cursor() as cursor:
+            cursor.execute(f'SET search_path TO "{schema}"')
+
+    return _connect
 
 
 async def _drop_schema(db: Database, schema: str) -> None:
     """ลบ schema ของเทสต์ทิ้ง เพื่อไม่ให้ตารางค้างรอบหลัง"""
     if not schema:
         return
-    from sqlalchemy import text
-
     try:
         async with db.engine.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))

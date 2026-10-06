@@ -116,9 +116,7 @@ async def test_resolve_records_when_the_session_was_last_used(database: Database
 
     async with database.session() as session:
         record = await session.scalar(
-            select(PlayerSession).where(
-                PlayerSession.token_hash == hash_token(issued.token)
-            )
+            select(PlayerSession).where(PlayerSession.token_hash == hash_token(issued.token))
         )
         assert record is not None
 
@@ -239,9 +237,7 @@ async def test_expired_session_does_not_work(database: Database) -> None:
     # บังคับให้หมดอายุโดยไม่ต้องรอเวลาจริง
     async with database.session() as session:
         record = await session.scalar(
-            select(PlayerSession).where(
-                PlayerSession.token_hash == hash_token(issued.token)
-            )
+            select(PlayerSession).where(PlayerSession.token_hash == hash_token(issued.token))
         )
         assert record is not None
         record.expires_at = datetime.now(UTC) - timedelta(seconds=1)
@@ -303,9 +299,7 @@ async def test_resolve_updates_last_seen(database: Database) -> None:
 
     async with database.session() as session:
         record = await session.scalar(
-            select(PlayerSession).where(
-                PlayerSession.token_hash == hash_token(issued.token)
-            )
+            select(PlayerSession).where(PlayerSession.token_hash == hash_token(issued.token))
         )
         assert record is not None
         # SQLite ไม่คืนโซนเวลามา ต้องตีความก่อนเทียบ ไม่งั้นเทสต์นี้จะล้มเฉพาะตอนรันบน SQLite
