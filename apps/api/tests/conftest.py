@@ -50,7 +50,7 @@ async def open_test_database() -> AsyncIterator[Database]:
     เพราะ conftest ถูกโหลดก่อนทุกเทสต์ รวมถึงเทสต์กติกาเกมที่ไม่ใช้ฐานข้อมูลเลย
     ถ้านำเข้าข้างบน เครื่องที่ยังไม่ได้ติดตั้ง sqlalchemy จะรันเทสต์เหล่านั้นไม่ได้
     """
-    from sqlalchemy import event, text
+    from sqlalchemy import event
 
     from makthai.db.session import Database
 
@@ -87,8 +87,12 @@ def _use_schema(schema: str) -> Any:
     """
 
     def _connect(dbapi_connection: Any, _record: Any) -> None:
-        with dbapi_connection.cursor() as cursor:
+        # asyncpg ไม่รองรับ with บน cursor ต้องปิดเอง
+        cursor = dbapi_connection.cursor()
+        try:
             cursor.execute(f'SET search_path TO "{schema}"')
+        finally:
+            cursor.close()
 
     return _connect
 
@@ -97,6 +101,8 @@ async def _drop_schema(db: Database, schema: str) -> None:
     """ลบ schema ของเทสต์ทิ้ง เพื่อไม่ให้ตารางค้างรอบหลัง"""
     if not schema:
         return
+    from sqlalchemy import text
+
     try:
         async with db.engine.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
