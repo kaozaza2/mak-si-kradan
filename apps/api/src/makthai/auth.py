@@ -14,6 +14,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 
 #: ความยาวขั้นต่ำของ AUTH_SECRET ที่ยอมรับได้
@@ -43,6 +44,16 @@ def looks_like_session(token: object) -> bool:
     แต่ไฟล์นี้ต้องไม่พึ่งฐานข้อมูล เพื่อให้ทดสอบได้ในไฟล์เดียว
     """
     return isinstance(token, str) and token.startswith(SESSION_PREFIX)
+
+
+def as_utc(moment: datetime) -> datetime:
+    """ตีความเวลาที่ไม่มีโซนเวลาให้เป็น UTC
+
+    SQLite คืน datetime ที่ไม่มีโซนเวลากลับมา แต่ Postgres คืนมาพร้อมโซนเวลา
+    ถ้าเอาไปเทียบกับเวลาปัจจุบันตรง ๆ จะพังเฉพาะตอนรันบน SQLite
+    ซึ่งเป็นข้อผิดพลาดที่จะไม่เจอตอนรันบน production
+    """
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)

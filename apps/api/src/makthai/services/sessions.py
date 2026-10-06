@@ -22,7 +22,7 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from makthai.auth import SESSION_PREFIX, looks_like_session
+from makthai.auth import SESSION_PREFIX, as_utc, looks_like_session
 from makthai.db.models import PlayerSession, utcnow
 
 #: ความยาวโทเคนสุ่ม ค่านี้คือความเดายากของเซสชัน ไม่ใช่ความยาวคีย์เข้ารหัส
@@ -95,11 +95,7 @@ class Sessions:
             return None
         if record.revoked_at is not None:
             return None
-        expires_at = record.expires_at
-        if expires_at.tzinfo is None:
-            # SQLite คืน datetime ที่ไม่มีโซนเวลามา ต้องตีความเป็น UTC
-            expires_at = expires_at.replace(tzinfo=UTC)
-        if expires_at < datetime.now(UTC):
+        if as_utc(record.expires_at) < datetime.now(UTC):
             return None
 
         # เติมทุกครั้งที่ใช้ ไม่งั้นจะรู้ไม่ได้ว่าเซสชันไหนยังมีคนใช้อยู่จริง
@@ -147,8 +143,17 @@ class Sessions:
         self._calls += 1
         if self._calls % CLEANUP_EVERY:
             return
-        await self.session.execute(delete(PlayerSession).where(PlayerSession.expires_at < utcnow()))
+        # SQLite เก็บ datetime เป็นข้อความโดยไม่มีโซนเวลา
+        # ถ้าเทียบกับเวลาที่มีโซนเวลา จะเปรียบเทียบผิดวิธีและลบผิดแถว
+        cutoff = datetime.now(UTC)
+        if self._is_sqlite():
+            cutoff = cutoff.replace(tzinfo=None)
+        await self.session.execute(delete(PlayerSession).where(PlayerSession.expires_at < cutoff))
         await self.session.commit()
+
+    def _is_sqlite(self) -> bool:
+        """เชื่อมต่อฐานข้อมูลนี้เป็น SQLite หรือไม่"""
+        return self.session.bind is not None and self.session.bind.dialect.name == "sqlite"
 
 
 __all__ = [

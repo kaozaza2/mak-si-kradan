@@ -13,8 +13,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
-from makthai.auth import SESSION_PREFIX, looks_like_session
+from makthai.auth import SESSION_PREFIX, as_utc, looks_like_session
 from makthai.db.models import Player, PlayerSession
 from makthai.db.session import Database
 from makthai.services.accounts import Accounts
@@ -25,10 +26,15 @@ from makthai.services.sessions import Sessions, hash_token, new_token
 pytestmark = pytest.mark.asyncio
 
 
-async def make_user(db: Database, email: str = "one@example.com") -> str:
+async def make_user(db: Database, email: str = "one@example.com", username: str = "player") -> str:
+    """สร้างผู้เล่นหนึ่งคนและคืน id
+
+    ชื่อผู้ใช้ต้องไม่ซ้ำ เพราะมีเงื่อนไข unique ถ้าซ้ำฐานข้อมูลจะปฏิเสธ
+    ทำให้เทสต์ที่สร้างสองคนล้มด้วยข้อผิดพลาดที่ไม่เกี่ยวกับสิ่งที่กำลังทดสอบ
+    """
     async with db.session() as session:
         result = await Accounts(session).register(
-            email=email, username="player", password="correct-horse-8", display_name="หนึ่ง"
+            email=email, username=username, password="correct-horse-8", display_name="หนึ่ง"
         )
         assert result.ok and result.user is not None
         return result.user.id
@@ -110,7 +116,7 @@ async def test_resolve_records_when_the_session_was_last_used(database: Database
 
     async with database.session() as session:
         record = await session.scalar(
-            PlayerSession.__table__.select().where(
+            select(PlayerSession).where(
                 PlayerSession.token_hash == hash_token(issued.token)
             )
         )
@@ -177,8 +183,8 @@ async def test_revoke_all_closes_every_open_session(database: Database) -> None:
 
 async def test_revoke_all_only_touches_that_player(database: Database) -> None:
     """คนอื่นต้องยังใช้ได้ ไม่งั้นแบนคนหนึ่งแล้วทุกคนหลุด"""
-    first = await make_user(database, "one@example.com")
-    second = await make_user(database, "two@example.com")
+    first = await make_user(database, "one@example.com", "player1")
+    second = await make_user(database, "two@example.com", "player2")
     async with database.session() as session:
         mine = (await Sessions(session).issue(first)).token
         theirs = (await Sessions(session).issue(second)).token
@@ -233,7 +239,7 @@ async def test_expired_session_does_not_work(database: Database) -> None:
     # บังคับให้หมดอายุโดยไม่ต้องรอเวลาจริง
     async with database.session() as session:
         record = await session.scalar(
-            PlayerSession.__table__.select().where(
+            select(PlayerSession).where(
                 PlayerSession.token_hash == hash_token(issued.token)
             )
         )
@@ -280,7 +286,7 @@ async def test_two_tokens_never_share_a_row(database: Database) -> None:
     async with database.session() as session:
         for _ in range(20):
             await Sessions(session).issue(player_id)
-        rows = (await session.execute(PlayerSession.__table__.select())).all()
+        rows = (await session.scalars(select(PlayerSession))).all()
 
     assert len(rows) == 20
     assert len({row.token_hash for row in rows}) == 20
@@ -297,15 +303,13 @@ async def test_resolve_updates_last_seen(database: Database) -> None:
 
     async with database.session() as session:
         record = await session.scalar(
-            PlayerSession.__table__.select().where(
+            select(PlayerSession).where(
                 PlayerSession.token_hash == hash_token(issued.token)
             )
         )
         assert record is not None
-        seen = record.last_seen_at
-        if seen.tzinfo is None:
-            seen = seen.replace(tzinfo=UTC)
-        assert seen >= before - timedelta(seconds=1)
+        # SQLite ไม่คืนโซนเวลามา ต้องตีความก่อนเทียบ ไม่งั้นเทสต์นี้จะล้มเฉพาะตอนรันบน SQLite
+        assert as_utc(record.last_seen_at) >= before - timedelta(seconds=1)
 
 
 async def test_expired_sessions_are_eventually_cleaned_up(database: Database) -> None:
@@ -327,5 +331,5 @@ async def test_expired_sessions_are_eventually_cleaned_up(database: Database) ->
         sessions_module.CLEANUP_EVERY = original
 
     async with database.session() as session:
-        remaining = (await session.execute(PlayerSession.__table__.select())).all()
+        remaining = (await session.scalars(select(PlayerSession))).all()
         assert all(row.token_hash != hash_token(expired.token) for row in remaining)
