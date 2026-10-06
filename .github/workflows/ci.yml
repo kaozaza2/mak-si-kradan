@@ -110,17 +110,17 @@ jobs:
           --health-timeout 3s
           --health-retries 5
 
+    # ตั้งไว้ที่ระดับงานเฉพาะฐานข้อมูลและ Redis
+    # ENVIRONMENT ไม่ตั้งที่นี่โดยเด็ดขาด เพราะเทสต์จะสร้างฐานข้อมูลชั่วคราวเอง
+    # ถ้าตั้ง production ไว้ เทสต์ทุกชุดจะถูกบังคับให้ต้องมีค่าครบแล้วล้ม
+    # เทสต์ควรตรวจสิ่งที่มันตั้งใจตรวจ ไม่ใช่ไปติดกับการตรวจค่าตั้ง
     env:
       DATABASE_URL: postgresql+asyncpg://makthai:makthai@localhost:5432/makthai_test
+      # เทสต์ที่แตะฐานข้อมูลต้องใช้ตัวนี้ ไม่ใช่ DATABASE_URL
+      # เพราะถ้าใช้ตัวเดียวกัน เทสต์แต่ละตัวจะชนกันเองและตารางจะค้างจากรอบก่อน
+      # ค่านี้คือสิ่งที่ทำให้เทสต์รันบน Postgres ได้จริง ไม่ใช่ SQLite ในความเงียบ
+      TEST_DATABASE_URL: postgresql+asyncpg://makthai:makthai@localhost:5432/makthai_test
       REDIS_URL: redis://localhost:6379/0
-      # ต้องให้แอปเชื่อว่าเป็น production ไม่งั้นจะข้ามการตรวจค่าตั้งที่บังคับ
-      # แต่ยังต้องตั้งค่าให้ครบ มิฉะนั้นเทสต์จะ fail ตอนเริ่มแอป
-      ENVIRONMENT: production
-      AUTH_SECRET: ci-only-secret-that-is-long-enough-here
-      PUBLIC_URL: https://mak-thai.test
-      CORS_ORIGINS: https://mak-thai.test
-      AUTO_CREATE_TABLES: "false"
-      SMTP_HOST: localhost
 
     steps:
       - uses: actions/checkout@v4
@@ -137,7 +137,15 @@ jobs:
       # ตารางต้องมาจาก migration ไม่ใช่ create_all
       # เพราะ production ใช้ migration ถ้าเทสต์ใช้ create_all
       # จะไม่มีวันจับว่า migration เขียนผิด
+      # ค่า production ถูกตั้งเฉพาะขั้นนี้ เพื่อพิสูจน์ว่าค่าบังคับทำงานจริง
       - name: ใช้ migration สร้างตาราง
+        env:
+          ENVIRONMENT: production
+          AUTH_SECRET: ci-only-secret-that-is-long-enough-here
+          PUBLIC_URL: https://mak-thai.test
+          CORS_ORIGINS: https://mak-thai.test
+          AUTO_CREATE_TABLES: "false"
+          SMTP_HOST: localhost
         run: uv run alembic upgrade head
         working-directory: apps/api
 

@@ -2,18 +2,19 @@
 
 import pytest_asyncio
 
-from makthai.db.session import Database
 from makthai.services.accounts import Accounts
 from makthai.services.verification import MAX_ATTEMPTS, Verification
 
 
 @pytest_asyncio.fixture
-async def session():
-    db = Database("sqlite+aiosqlite:///:memory:")
-    await db.create_all()
-    async with db.session() as opened:
+async def session(database):
+    """เปิด session จากฐานข้อมูลที่ conftest เตรียมไว้
+
+    ใช้ตัวเดียวกันนี้แทนการสร้างเอง เพื่อให้รันบน Postgres ได้เมื่อตั้ง
+    TEST_DATABASE_URL เพราะนั่นคือจุดที่พฤติกรรมต่างจาก SQLite มากที่สุด
+    """
+    async with database.session() as opened:
         yield opened
-    await db.dispose()
 
 
 async def make_account(session, email: str = "player@example.com"):

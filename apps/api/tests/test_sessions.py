@@ -20,15 +20,9 @@ from makthai.db.session import Database
 from makthai.services.accounts import Accounts
 from makthai.services.sessions import Sessions, hash_token, new_token
 
+# ฐานข้อมูลมาจาก conftest เพื่อให้รันบน Postgres ได้เมื่อตั้ง TEST_DATABASE_URL
+
 pytestmark = pytest.mark.asyncio
-
-
-@pytest.fixture
-async def database(tmp_path: object) -> Database:
-    db = Database(f"sqlite+aiosqlite:///{tmp_path}/test.db")
-    await db.create_all()
-    yield db
-    await db.dispose()
 
 
 async def make_user(db: Database, email: str = "one@example.com") -> str:

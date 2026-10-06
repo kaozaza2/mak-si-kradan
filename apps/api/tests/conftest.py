@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
+
+import pytest_asyncio
+
 from makthai.games.mak_si_kradan import (
     RULE_PRESETS,
     Board,
@@ -10,7 +16,46 @@ from makthai.games.mak_si_kradan import (
     index_of,
 )
 
+if TYPE_CHECKING:
+    from makthai.db.session import Database
+
 EMPTY_ROW = "........"
+
+
+def test_database_url() -> str:
+    """URL ของฐานข้อมูลที่เทสต์ควรใช้
+
+    ถ้าตั้ง TEST_DATABASE_URL ไว้ ให้ใช้ตัวนั้น — มักเป็น Postgres จริงใน CI
+    เพราะ SQLite ไม่บังคับ foreign key และไม่มีข้อผิดพลาดพร้อมกันแบบ Postgres
+    ถ้าไม่ตั้ง ถึงใช้ SQLite ในหน่วยความจำซึ่งเร็วและไม่ต้องมีบริการภายนอก
+
+    ผู้เขียนโค้ดไม่ต้องแยกเทสต์สองชุด เทสต์เดิมทำงานได้ทั้งสองแบบ
+    """
+    return os.environ.get("TEST_DATABASE_URL", "") or "sqlite+aiosqlite:///:memory:"
+
+
+async def open_test_database() -> AsyncIterator["Database"]:
+    """เปิดฐานข้อมูลสำหรับเทสต์แล้วปิดเมื่อเสร็จ
+
+    นำเข้า Database ตรงนี้ไม่ได้เพราะ conftest ถูกโหลดก่อนทุกเทสต์
+    รวมถึงเทสต์กติกาเกมที่ไม่ต้องใช้ฐานข้อมูลเลย
+    การนำเข้าตรง ๆ จะทำให้เครื่องที่ยังไม่ได้ติดตั้ง sqlalchemy รันเทสต์เหล่านั้นไม่ได้
+    """
+    from makthai.db.session import Database
+
+    db = Database(test_database_url())
+    # ใช้ create_all เพราะเทสต์ไม่ต้องพิสูจน์ว่า migration ถูกต้อง
+    # การตรวจเรื่องนั้นเป็นหน้าที่ของ alembic check ใน CI
+    await db.create_all()
+    yield db
+    await db.dispose()
+
+
+#: fixture ที่เทสต์ที่ต้องการฐานข้อมูลใช้ร่วมกัน
+#: ประกาศแบบนี้เพราะ pytest_asyncio ต้องเห็นตัว fixture ตอนนำเข้าไฟล์
+#: แต่ Database นำเข้าตรง ๆ ไม่ได้ เพราะจะทำให้เทสต์กติกาเกมที่ไม่ใช้ฐานข้อมูล
+#: รันไม่ได้บนเครื่องที่ยังไม่ได้ติดตั้ง sqlalchemy
+database = pytest_asyncio.fixture(open_test_database)
 
 
 def board_from_ascii(rows: list[str]) -> Board:

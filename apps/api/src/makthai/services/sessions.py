@@ -17,8 +17,9 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from makthai.auth import SESSION_PREFIX, looks_like_session
@@ -109,13 +110,8 @@ class Sessions:
 
     async def revoke(self, token: str) -> bool:
         """ยกเลิกเซสชันเดียว ใช้ตอนออกจากระบบ"""
-        result = await self.session.execute(
-            update(PlayerSession)
-            .where(PlayerSession.token_hash == hash_token(token))
-            .values(revoked_at=utcnow())
-        )
-        await self.session.commit()
-        return bool(result.rowcount)
+        result = await self._revoke_where(PlayerSession.token_hash == hash_token(token))
+        return result > 0
 
     async def revoke_all(self, player_id: str) -> int:
         """ยกเลิกทุกเซสชันของผู้เล่นคนนั้น
@@ -123,12 +119,21 @@ class Sessions:
         ใช้เมื่อเปลี่ยนรหัสผ่านหรือถูกแบน เพราะทุกทางที่เข้ามาต้องถูกปิด
         ไม่ใช่แค่ทางที่คนรู้
         """
-        result = await self.session.execute(
-            update(PlayerSession)
-            .where(PlayerSession.player_id == player_id)
-            .where(PlayerSession.revoked_at.is_(None))
-            .values(revoked_at=utcnow())
+        return await self._revoke_where(
+            PlayerSession.player_id == player_id,
+            PlayerSession.revoked_at.is_(None),
         )
+
+    async def _revoke_where(self, *conditions: Any) -> int:
+        """ยกเลิกเซสชันที่ตรงเงื่อนไข คืนจำนวนที่ปิดได้จริง
+
+        ต้องรู้จำนวนที่ปิดได้ เพราะการนับผิดทำให้ผู้ใช้เชื่อว่าเครื่องอื่นถูกออกแล้ว
+        ทั้งที่ยังไม่ได้ปิดเลย
+        """
+        statement = update(PlayerSession).where(*conditions).values(revoked_at=utcnow())
+        # rowcount มีอยู่จริงบน CursorResult แต่ลายเซ็นของ execute ประกาศเป็น Result
+        # จึงต้องยืนยันชนิด ไม่งั้น mypy --strict จะไม่ยอมให้อ่าน rowcount
+        result = cast(CursorResult[Any], await self.session.execute(statement))
         await self.session.commit()
         return int(result.rowcount or 0)
 

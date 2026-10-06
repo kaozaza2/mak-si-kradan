@@ -5,13 +5,19 @@ import re
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from makthai.config import MIN_AUTH_SECRET
 from makthai.main import create_app
 
 
 @pytest_asyncio.fixture
 async def client(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
-    monkeypatch.setenv("AUTH_SECRET", "test-secret-that-is-long-enough")
+    # ต้องยาวพอด้วยขีดที่ production บังคับ ไม่งั้นแอปจะไม่ยอมเริ่ม
+    # และเทสต์จะล้มตอนตั้งแอป ไม่ใช่ตอนทดสอบสิ่งที่ตั้งใจทดสอบ
+    monkeypatch.setenv("AUTH_SECRET", "t" * MIN_AUTH_SECRET)
+    # ตั้งให้ชัดเจนว่าเป็นการทดสอบ ไม่งั้นถ้ารันใน CI ที่ตั้ง ENVIRONMENT=production
+    # ค่าตัวอย่างข้างบนจะถูกบังคับให้ครบและเทสต์ล้มทั้งชุด
+    monkeypatch.setenv("ENVIRONMENT", "test")
     from makthai.config import get_settings
 
     get_settings.cache_clear()

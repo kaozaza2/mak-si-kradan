@@ -18,6 +18,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from makthai.config import MIN_AUTH_SECRET
 from makthai.main import create_app
 
 MAILPIT = "http://localhost:8025"
@@ -39,7 +40,10 @@ pytestmark = pytest.mark.skipif(
 @pytest_asyncio.fixture
 async def client(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'inbox.db'}")
-    monkeypatch.setenv("AUTH_SECRET", "test-secret-that-is-long-enough")
+    monkeypatch.setenv("AUTH_SECRET", "t" * MIN_AUTH_SECRET)
+    # ระบุให้ชัดว่าเป็นการทดสอบ ไม่งั้นถ้ารันใน CI ที่ตั้ง ENVIRONMENT=production
+    # ค่าตัวอย่างจะถูกบังคับให้ครบและเทสต์ล้มทั้งชุด
+    monkeypatch.setenv("ENVIRONMENT", "test")
     monkeypatch.setenv("SMTP_HOST", "localhost")
     monkeypatch.setenv("SMTP_PORT", str(SMTP_PORT))
     from makthai.config import get_settings
