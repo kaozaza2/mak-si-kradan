@@ -175,7 +175,8 @@ jobs:
       - name: สร้างภาพ frontend
         uses: docker/build-push-action@v6
         with:
-          context: ./apps/web
+          # ต้องเป็นรากของ workspace เพราะ lock อยู่ที่ราก ไม่ใช่ใน apps/web
+          context: .
           file: ./apps/web/Dockerfile
           target: release
           push: false
@@ -196,7 +197,14 @@ jobs:
           POSTGRES_PASSWORD: ci-only-password
           PUBLIC_URL: https://mak-thai.test
           CORS_ORIGINS: https://mak-thai.test
-        run: docker compose config --quiet
+        run: |
+          # ต้องตรวจด้วยว่าไฟล์ที่ compose ชี้ไปมีอยู่จริง
+          # ไม่งั้นจะเสียตอน deploy เพราะย้ายไฟล์แล้วลืมแก้ compose
+          docker compose config --quiet
+          for f in apps/api/Dockerfile apps/web/Dockerfile deploy/nginx-upstream.conf; do
+            test -f "$f" || { echo "ไม่พบ $f ที่ compose ชี้ไป" >&2; exit 1; }
+          done
+          echo "ไฟล์ที่ compose ชี้ไปมีครบ"
 
       # ต้องพังเมื่อไม่ได้ตั้งค่า นี่คือการยืนยันว่า :? ทำงานจริง
       # ถ้าไม่ตรวจ ค่าที่บังคับอาจเป็นแค่ข้อความในไฟล์ที่ไม่มีผล

@@ -158,8 +158,10 @@ services:
 
   web:
     build:
-      context: ./apps/web
-      dockerfile: Dockerfile
+      # ต้องเป็นรากของ workspace เพราะ pnpm-lock.yaml อยู่ที่ราก
+      # ถ้าใช้ context ./apps/web จะหา lock ไม่เจอและ --frozen-lockfile จะล้ม
+      context: .
+      dockerfile: apps/web/Dockerfile
       target: release
     restart: unless-stopped
     depends_on:

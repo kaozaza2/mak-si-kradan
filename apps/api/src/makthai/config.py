@@ -96,9 +96,7 @@ class Settings(BaseSettings):
                 "เพราะ create_all ไม่แก้ตารางที่มีอยู่แล้ว ต้องใช้ alembic upgrade head"
             )
         if not self.database_url:
-            problems.append(
-                "DATABASE_URL ต้องตั้งใน production ไม่ตั้งจะไม่มีบัญชีผู้ใช้และไม่มีอันดับ"
-            )
+            problems.append("DATABASE_URL ต้องตั้งใน production ไม่ตั้งจะไม่มีบัญชีผู้ใช้และไม่มีอันดับ")
         if not self.public_url.startswith("https://"):
             problems.append(
                 "PUBLIC_URL ต้องเป็น https:// ใน production เพราะลิงก์เชิญจะส่งผ่านทางที่ไม่เข้ารหัส"
