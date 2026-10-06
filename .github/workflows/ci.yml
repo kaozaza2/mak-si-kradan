@@ -120,7 +120,10 @@ jobs:
       # เพราะถ้าใช้ตัวเดียวกัน เทสต์แต่ละตัวจะชนกันเองและตารางจะค้างจากรอบก่อน
       # ค่านี้คือสิ่งที่ทำให้เทสต์รันบน Postgres ได้จริง ไม่ใช่ SQLite ในความเงียบ
       TEST_DATABASE_URL: postgresql+asyncpg://makthai:makthai@localhost:5432/makthai_test
-      REDIS_URL: redis://localhost:6379/0
+      # ตั้งใจไม่ให้ REDIS_URL ที่ระดับงาน เพราะตัวนับโควตาจะไปนับรวมกับ Redis
+      # แล้วทุกเทสต์จะใช้โควตาของแอปตัวเดียวกัน เพราะแต่ละเทสต์สร้างแอปใหม่แต่ตัวนับโควตากลับรวมกัน
+      # ทำให้เทสต์ที่สมัครบัญชีถูก 429 ทั้งที่ไม่ได้ยิงเยอะ
+      # เทสต์คลัสเตอร์ใช้ฐานข้อมูล Redis ของตัวเอง จึงตั้งในขั้นตอนนั้นแทน
 
     steps:
       - uses: actions/checkout@v4
@@ -160,6 +163,14 @@ jobs:
 
       - name: รันเทสต์คลัสเตอร์กับ Redis จริง
         run: uv run pytest tests/test_redis_cluster.py -v
+        working-directory: apps/api
+
+      # เทสต์อื่นที่ต้องใช้ Redis ต้องตั้งเอง เพราะการนับโควตาใช้ Redis
+      # ต้องแยกระหว่างเทสต์ ไม่งั้นทุกตัวแย่งโควตากัน
+      - name: ตรวจว่าการจำกัดโควตานับรวมทั้งคลัสเตอร์
+        run: uv run pytest tests/test_api.py -v
+        env:
+          REDIS_URL: redis://localhost:6379/14
         working-directory: apps/api
 
   # ตรวจว่าภาพที่จะ deploy สร้างได้จริง

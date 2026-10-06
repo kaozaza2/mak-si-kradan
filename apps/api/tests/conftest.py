@@ -34,7 +34,7 @@ def test_database_url() -> str:
     return os.environ.get("TEST_DATABASE_URL", "") or "sqlite+aiosqlite:///:memory:"
 
 
-async def open_test_database() -> AsyncIterator["Database"]:
+async def open_test_database() -> AsyncIterator[Database]:
     """เปิดฐานข้อมูลสำหรับเทสต์แล้วปิดเมื่อเสร็จ
 
     นำเข้า Database ตรงนี้ไม่ได้เพราะ conftest ถูกโหลดก่อนทุกเทสต์
