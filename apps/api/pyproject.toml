@@ -26,6 +26,7 @@ dev = [
     "pytest-cov>=7.0",
     "ruff>=0.14",
     "mypy>=1.18",
+    "types-redis>=4.6",
 ]
 
 [build-system]
@@ -38,7 +39,30 @@ packages = ["src/makthai"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-q"
+addopts = "-q --strict-markers"
+# ที่ต้องใช้ฐานข้อมูลหรือ Redis จริง — ข้ามเงียบ ๆ ถ้าไม่มี
+# ต้องการให้เห็นว่าข้ามเพราะไม่มีบริการ ไม่ใช่ข้ามเพราะเทสต์พังเงียบ
+markers = [
+    "integration: ต้องต่อฐานข้อมูลหรือ Redis จริง",
+]
+filterwarnings = ["error::DeprecationWarning:makthai.*"]
+
+[tool.coverage.run]
+source = ["makthai"]
+# ไฟล์ที่มีแต่จุดเริ่มแอปและตัวแปลง ทดสอบผ่านการเรียกจริงแทนได้แล้ว
+omit = ["*/__init__.py", "*/migrations/*"]
+
+[tool.coverage.report]
+# บรรทัดที่ไม่มีเทสต์มากเกินนี้ต้องมีเหตุผลที่เขียนไว้ ไม่ใช่ปล่อยผ่านเงียบ ๆ
+fail_under = 0
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
 
 [tool.ruff]
 line-length = 100

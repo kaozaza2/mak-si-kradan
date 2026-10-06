@@ -1,0 +1,198 @@
+name: ci
+
+# รันทุกครั้งที่ push และเมื่อเปิด pull request
+# ต้องผ่านก่อน merge เพราะเทสต์ที่ตกมักไปโดนรอบถัดไป
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# ยกเลิกรอบเก่าถ้ามีรอบใหม่กับ branch เดิม ประหยัดเวลารอ
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ติดตั้ง uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: ติดตั้ง dependency
+        run: uv sync --frozen --extra dev
+        working-directory: apps/api
+
+      # ruff ต้องเจอข้อผิดพลาดก่อน จึงค่อยรันเทสต์
+      # ไม่งั้นเทสต์ที่ผ่านแต่โค้ดเละก็ยังได้สีเขียว
+      - name: ตรวจรูปแบบและกติกา
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+        working-directory: apps/api
+
+      # mypy strict ต้องผ่านก่อนจะเชื่อว่าเทสต์ครอบคลุมพอ
+      - name: ตรวจชนิดข้อมูล
+        run: uv run mypy
+        working-directory: apps/api
+
+      - name: รันเทสต์
+        run: uv run pytest --cov=makthai --cov-report=term-missing --cov-report=xml
+        working-directory: apps/api
+
+      - name: เก็บค่าความครอบคลุม
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-api
+          path: apps/api/coverage.xml
+          retention-days: 7
+
+  web:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: ติดตั้ง dependency
+        run: pnpm install --frozen-lockfile
+
+      - name: ตรวจชนิดข้อมูล
+        run: pnpm typecheck
+
+      - name: รันเทสต์
+        run: pnpm test:web
+
+      - name: สร้างของจริง
+        run: pnpm build
+
+  # เทสต์ฝั่งบ้านที่แตะฐานข้อมูลและ Redis จริง
+  # เทสต์ปกติไม่ครอบคลุม เพราะส่วนใหญ่รันบน SQLite ซึ่งพฤติกรรมต่างจาก Postgres
+  # ถ้าไม่มีงานนี้ ข้อผิดพลาดเฉพาะ production จะไม่มีวันถูกจับก่อน deploy
+  integration:
+    name: ฐานข้อมูลและ Redis จริง
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: makthai
+          POSTGRES_PASSWORD: makthai
+          POSTGRES_DB: makthai_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U makthai"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 3s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://makthai:makthai@localhost:5432/makthai_test
+      REDIS_URL: redis://localhost:6379/0
+      # ต้องให้แอปเชื่อว่าเป็น production ไม่งั้นจะข้ามการตรวจค่าตั้งที่บังคับ
+      # แต่ยังต้องตั้งค่าให้ครบ มิฉะนั้นเทสต์จะ fail ตอนเริ่มแอป
+      ENVIRONMENT: production
+      AUTH_SECRET: ci-only-secret-that-is-long-enough-here
+      PUBLIC_URL: https://mak-thai.test
+      CORS_ORIGINS: https://mak-thai.test
+      AUTO_CREATE_TABLES: "false"
+      SMTP_HOST: localhost
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ติดตั้ง uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: ติดตั้ง dependency
+        run: uv sync --frozen --extra dev
+        working-directory: apps/api
+
+      # ตารางต้องมาจาก migration ไม่ใช่ create_all
+      # เพราะ production ใช้ migration ถ้าเทสต์ใช้ create_all
+      # จะไม่มีวันจับว่า migration เขียนผิด
+      - name: ใช้ migration สร้างตาราง
+        run: uv run alembic upgrade head
+        working-directory: apps/api
+
+      - name: ตรวจว่า migration ตรงกับโมเดล
+        run: |
+          uv run alembic check
+        working-directory: apps/api
+
+      - name: รันเทสต์ที่ต้องใช้ฐานข้อมูลจริง
+        run: uv run pytest tests/test_api_accounts.py tests/test_verification.py tests/test_sessions.py -v
+        working-directory: apps/api
+
+      - name: รันเทสต์คลัสเตอร์กับ Redis จริง
+        run: uv run pytest tests/test_redis_cluster.py -v
+        working-directory: apps/api
+
+  # ตรวจว่าภาพที่จะ deploy สร้างได้จริง
+  # ถ้า Dockerfile พังจะได้รู้ตอนนี้ ไม่ใช่ตอนกำลังจะ deploy
+  docker:
+    name: สร้างภาพ
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: สร้างภาพ backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/api
+          file: ./apps/api/Dockerfile
+          target: release
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: สร้างภาพ frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/web
+          file: ./apps/web/Dockerfile
+          target: release
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  config:
+    name: ไฟล์ตั้งค่า
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ตรวจว่า compose อ่านได้และค่าบังคับครบ
+        run: |
+          docker compose config --quiet
+          # ไม่ตั้งค่าให้ครบแล้วสั่ง build ต้องต้องล้ม เพราะแปลว่าไม่ได้บังคับจริง
+          if docker compose --env-file /dev/null config >/dev/null 2>&1; then
+            echo "compose ไม่ได้บังคับค่าที่จำเป็น" >&2
+            exit 1
+          fi
