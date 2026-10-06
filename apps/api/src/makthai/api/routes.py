@@ -362,7 +362,9 @@ async def leaderboard(
 
 
 @router.get("/api/v1/players/search", tags=["accounts"])
-async def search_players(request: Request, q: Annotated[str, Query(max_length=MAX_QUERY_LENGTH)]) -> Any:
+async def search_players(
+    request: Request, q: Annotated[str, Query(max_length=MAX_QUERY_LENGTH)]
+) -> Any:
     identity = await identity_of(request)
     if identity is None:
         return fail("unauthorized", 401)

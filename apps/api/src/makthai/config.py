@@ -101,7 +101,8 @@ class Settings(BaseSettings):
             )
         if not self.public_url.startswith("https://"):
             problems.append(
-                "PUBLIC_URL ต้องเป็น https:// ใน production เพราะลิงก์เชิญจะส่งผ่านทางที่ไม่เข้ารหัส"
+                "PUBLIC_URL ต้องเป็น https:// ใน production "
+                "เพราะลิงก์เชิญจะส่งผ่านทางที่ไม่เข้ารหัส"
             )
         if not self.mail_webhook_url and not self.smtp_host:
             problems.append(

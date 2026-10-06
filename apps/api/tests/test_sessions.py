@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from makthai.auth import SESSION_PREFIX, looks_like_session
-from makthai.db.models import Player, PlayerSession, utcnow
+from makthai.db.models import Player, PlayerSession
 from makthai.db.session import Database
 from makthai.services.accounts import Accounts
 from makthai.services.sessions import Sessions, hash_token, new_token

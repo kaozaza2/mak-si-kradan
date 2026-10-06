@@ -247,7 +247,10 @@ class RedisCluster:
                 # Redis สั่นเป็นเรื่องปกติของระบบกระจาย ไม่ใช่เหตุของจบโปรเซส
                 # ต้องไม่ให้งานนี้ตาย ไม่งั้นข้อความจะทิ้งต่อไปเรื่อย ๆ ตลอดชีวิตโหนด
                 self._pumping = False
-                logger.warning("ส่งข้อความข้ามโหนดไม่สำเร็จ รอ Redis กลับมา %.1f วินาที", RECONNECT_DELAY)
+                logger.warning(
+                    "ส่งข้อความข้ามโหนดไม่สำเร็จ รอ Redis กลับมา %.1f วินาที",
+                    RECONNECT_DELAY,
+                )
                 await asyncio.sleep(RECONNECT_DELAY)
                 self._requeue(channel, envelope)
             else:

@@ -98,4 +98,4 @@ class WindowCounter:
         return len(self._hits)
 
 
-__all__ = ["MAX_KEYS", "SWEEP_AT", "Clock", "MonotonicClock", "WindowCounter"]
+__all__ = ["Clock", "MonotonicClock", "WindowCounter"]

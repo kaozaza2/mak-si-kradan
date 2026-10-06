@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from hub_harness import FakeConnection, HubHarness
 from makthai.realtime.cluster import LocalCluster
 from makthai.realtime.hub import HELLO_LIMIT, MESSAGE_LIMIT, ConnectionGate

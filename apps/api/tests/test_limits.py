@@ -104,7 +104,7 @@ def test_expired_keys_are_swept_before_adding_new_ones() -> None:
 
 def test_sweep_keeps_keys_that_are_still_live() -> None:
     """กวาดทิ้งแล้วคีย์ที่ยังนับอยู่ต้องอยู่ ไม่ใช่ถูกทิ้งพร้อมกัน"""
-    counter_, clock = counter(sweep_at=10)
+    counter_, _clock = counter(sweep_at=10)
     for i in range(10):
         counter_.allow(f"live{i}", 5, 3600.0)
 

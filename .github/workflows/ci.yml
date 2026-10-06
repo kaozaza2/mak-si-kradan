@@ -169,8 +169,8 @@ jobs:
           file: ./apps/api/Dockerfile
           target: release
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          load: true
+          tags: makthai-api:ci
 
       - name: สร้างภาพ frontend
         uses: docker/build-push-action@v6
@@ -179,8 +179,8 @@ jobs:
           file: ./apps/web/Dockerfile
           target: release
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          load: true
+          tags: makthai-web:ci
 
   config:
     name: ไฟล์ตั้งค่า
@@ -188,11 +188,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: ตรวจว่า compose อ่านได้และค่าบังคับครบ
+      # ต้องสร้าง .env จากตัวอย่างก่อน ไม่งั้น compose จะหยุดที่ค่าที่บังคับ
+      # ซึ่งถูกต้องสำหรับการ deploy แต่ทำให้ตรวจที่ต้องการไม่ได้
+      - name: ตรวจว่า compose อ่านได้เมื่อตั้งค่าครบ
+        env:
+          AUTH_SECRET: ci-only-secret-that-is-long-enough-here
+          POSTGRES_PASSWORD: ci-only-password
+          PUBLIC_URL: https://mak-thai.test
+          CORS_ORIGINS: https://mak-thai.test
+        run: docker compose config --quiet
+
+      # ต้องพังเมื่อไม่ได้ตั้งค่า นี่คือการยืนยันว่า :? ทำงานจริง
+      # ถ้าไม่ตรวจ ค่าที่บังคับอาจเป็นแค่ข้อความในไฟล์ที่ไม่มีผล
+      - name: ตรวจว่า compose ปฏิเสธเมื่อค่าที่บังคับขาด
         run: |
-          docker compose config --quiet
-          # ไม่ตั้งค่าให้ครบแล้วสั่ง build ต้องต้องล้ม เพราะแปลว่าไม่ได้บังคับจริง
           if docker compose --env-file /dev/null config >/dev/null 2>&1; then
             echo "compose ไม่ได้บังคับค่าที่จำเป็น" >&2
             exit 1
           fi
+          echo "บังคับค่าได้ตามที่ตั้งใจ"

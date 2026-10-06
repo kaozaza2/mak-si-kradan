@@ -165,9 +165,7 @@ class PlayerSession(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     #: sha256 ของโทเคน — ค้นด้วยดัชนีนี้ เพราะแต่ละคำขอต้องหา
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    player_id: Mapped[str] = mapped_column(
-        ForeignKey("players.id", ondelete="CASCADE"), index=True
-    )
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     #: อายุที่ใช้งานได้ เซสชันที่หมดอายุแล้วต้องใช้ไม่ได้แม้ยังไม่ถูกลบ
@@ -180,6 +178,8 @@ class PlayerSession(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     player: Mapped[Player] = relationship(back_populates="sessions")
+
+    __table_args__ = (Index("ix_player_sessions_player", "player_id"),)
 
     @property
     def revoked(self) -> bool:
