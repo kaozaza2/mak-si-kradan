@@ -194,9 +194,7 @@ async def ready(request: Request) -> Any:
     cluster_status = _probe_cluster(cluster)
     ok = db_status.ok and cluster_status.ok
     return JSONResponse(
-        ReadyResponse(ok=ok, database=db_status, cluster=cluster_status).model_dump(
-            by_alias=True
-        ),
+        ReadyResponse(ok=ok, database=db_status, cluster=cluster_status).model_dump(by_alias=True),
         status_code=200 if ok else 503,
     )
 
@@ -352,7 +350,7 @@ async def me(request: Request) -> Any:
 
 @router.get("/api/v1/leaderboard", tags=["accounts"])
 async def leaderboard(
-    request: Request, limit: Annotated[int, Query(50, ge=1, le=MAX_PAGE_SIZE)]
+    request: Request, limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 50
 ) -> Any:
     database = request.app.state.database
     if database is None:
@@ -381,7 +379,7 @@ async def search_players(
 async def player_matches(
     request: Request,
     player_id: str,
-    limit: Annotated[int, Query(20, ge=1, le=MAX_PAGE_SIZE)],
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 20,
 ) -> Any:
     history = request.app.state.history
     if history is None:

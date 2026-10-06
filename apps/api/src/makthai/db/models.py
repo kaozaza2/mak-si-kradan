@@ -171,9 +171,7 @@ class PlayerSession(Base):
     #: อายุที่ใช้งานได้ เซสชันที่หมดอายุแล้วต้องใช้ไม่ได้แม้ยังไม่ถูกลบ
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     #: ยกเลิกเมื่อไร — ไม่ลบแถวทิ้ง เพื่อให้รู้ว่าเคยใช้งานและถูกปิดเมื่อไร
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), default=None
-    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     #: เวลาที่ใช้จริงล่าสุด ใช้แยกเซสชันที่ยังมีคนใช้ออกจากที่ลืมไปแล้ว
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

@@ -4,12 +4,16 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
-# lock กับ manifest มาก่อน ชั้นนี้จะแคชได้จนกว่าจะเปลี่ยน dependency
-COPY package.json pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
+# pnpm-lock.yaml อยู่ที่รากของ monorepo ไม่ใช่ใน apps/web
+# ต้องคัดลอก workspace ทั้งก้อน ไม่งั้นจะหา lock ไม่เจอและ --frozen-lockfile จะล้ม
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml /tmp/workspace/
+COPY apps/web/package.json ./apps/web/
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    corepack enable && pnpm config set store-dir /pnpm/store && \
+    cd apps/web && pnpm install --frozen-lockfile --store-dir /pnpm/store
 
-COPY . .
-RUN pnpm build
+COPY apps/web/ ./
+RUN cd apps/web && pnpm build
 
 
 FROM nginx:1.27-alpine AS release

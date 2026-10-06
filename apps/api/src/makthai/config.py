@@ -101,8 +101,7 @@ class Settings(BaseSettings):
             )
         if not self.public_url.startswith("https://"):
             problems.append(
-                "PUBLIC_URL ต้องเป็น https:// ใน production "
-                "เพราะลิงก์เชิญจะส่งผ่านทางที่ไม่เข้ารหัส"
+                "PUBLIC_URL ต้องเป็น https:// ใน production เพราะลิงก์เชิญจะส่งผ่านทางที่ไม่เข้ารหัส"
             )
         if not self.mail_webhook_url and not self.smtp_host:
             problems.append(
@@ -119,7 +118,5 @@ def get_settings() -> Settings:
     if problems:
         # ล้มเหลวตอนเริ่ม ไม่ใช่ปล่อยให้รันแล้วพังเงียบตอนมีคนมาใช้
         # การรันแบบค่าเริ่มต้นของ dev ยังทำได้ เพราะ ENVIRONMENT ไม่ใช่ production
-        raise RuntimeError(
-            "ตั้งค่าไม่ครบสำหรับ production:\n  - " + "\n  - ".join(problems)
-        )
+        raise RuntimeError("ตั้งค่าไม่ครบสำหรับ production:\n  - " + "\n  - ".join(problems))
     return settings
