@@ -73,6 +73,8 @@ async def open_test_database() -> AsyncIterator[Database]:
         await _run_sql(db, f'CREATE SCHEMA IF NOT EXISTS "{schema}"', fresh=True)
     try:
         await db.create_all()
+        # ต้อง yield ตรงนี้ ถ้าไม่มี เทสต์จะได้รับ None แทนฐานข้อมูล
+        yield db
     finally:
         await _drop_schema(db, schema)
         await db.dispose()
