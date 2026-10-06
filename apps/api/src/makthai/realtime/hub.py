@@ -9,8 +9,8 @@ hub ไม่รู้จักกติกาของเกมใดเลย 
 
 from __future__ import annotations
 
+import logging
 import random
-import time
 import uuid
 from typing import Any, Protocol, cast
 
@@ -18,6 +18,7 @@ from makthai import PROTOCOL_VERSION
 from makthai.auth import (
     Identity,
     Kind,
+    looks_like_session,
     new_guest_id,
     new_guest_name,
     room_code,
@@ -27,6 +28,7 @@ from makthai.auth import (
 )
 from makthai.domain.registry import GameRegistry
 from makthai.domain.types import EndReason
+from makthai.limits import WindowCounter
 from makthai.realtime.cluster import (
     PEER_TIMEOUT,
     SNAPSHOT_INTERVAL,
@@ -38,6 +40,100 @@ from makthai.realtime.match import Match
 from makthai.realtime.room import Room
 from makthai.realtime.scheduler import AsyncioScheduler, Scheduler
 from makthai.realtime.session import Connection, Session
+
+logger = logging.getLogger(__name__)
+
+#: ผู้เล่นที่หลุดไปแล้วเก็บไว้นานเท่าไร ก่อนลืมทิ้ง
+#: ต้องยาวพอให้เขากลับมาได้ เช่น เปลี่ยนเน็ต ปิดเบราว์เซอร์ค้างไว้ หรือเดินออกจากเกมชั่วคราว
+#: ตัวเลขนี้คือเวลาที่กลับมาแล้ว "ยังอยู่ในห้องเดิม" ได้ ยิ่งยาวไว้ก็ยิ่งกินหน่วยความจำ
+SESSION_TTL = 300.0
+
+#: เกมที่จบแล้วเก็บผลไว้ให้ดูนานเท่าไร ก่อนปล่อย engine ทิ้ง
+#: ระหว่างนี้ผู้เล่นยังดูผลได้และกดขอเล่นใหม่ได้
+FINISHED_MATCH_TTL = 600.0
+
+#: ตรวจหาสิ่งที่ค้างทุกกี่วินาที
+REAP_INTERVAL = 60.0
+
+#: ขอสร้าง session ใหม่ได้กี่ครั้งจาก IP เดียวในหน้าต่างเวลานี้
+#: ผู้เล่นปกติต่อครั้งเดียวแล้วใช้ session นั้นต่อ แม้เปิดหลายแท็บก็ใช้ token เดิม
+#: การยิงซ้ำเกินนี้จึงเป็นการสร้าง session ทิ้ง ไม่ใช่การเล่น
+HELLO_LIMIT = 20
+HELLO_WINDOW = 300.0
+
+#: ส่งข้อความได้กี่ข้อความต่อสายในหน้าต่างเวลานี้
+#: คำสั่งหนึ่งเทิร์นคือสองสามข้อความ เผื่อ UI ยิงบ่อย ๆ เลยตั้งหลายเท่า
+MESSAGE_LIMIT = 60
+MESSAGE_WINDOW = 1.0
+
+#: ขนาดข้อความที่รับได้สูงสุด
+#: คำสั่งของเกมเล็กมาก แต่การยิงข้อความยาว ๆ วินาทีเดียวก็กินหน่วยความจำทั้งโหนด
+MAX_MESSAGE_BYTES = 16 * 1024
+
+#: จำนวนสายที่คนเดียวต่อได้ คนปกติเปิดได้ไม่กี่แท็บ
+MAX_CONNECTIONS_PER_PEER = 8
+
+#: จำนวนสายทั้งหมดที่โหนดรับได้พร้อมกัน
+#: ต้องตั้งให้พอดีกับขนาดเครื่อง เพราะแต่ละสายกินหน่วยความจำคงที่
+MAX_CONNECTIONS_TOTAL = 10_000
+
+#: รหัสปิดตามมาตรฐานเมื่อถูกปฏิเสธด้วยนโยบาย ไม่ใช่เพราะพลาด
+WS_POLICY_VIOLATION = 1008
+
+
+class SchedulerClock:
+    """อ่านเวลาจาก scheduler เพื่อให้ตัวจำกัดความถี่เดินตามเวลาที่เทสต์ควบคุม"""
+
+    def __init__(self, scheduler: Scheduler) -> None:
+        self._scheduler = scheduler
+
+    def now(self) -> float:
+        return self._scheduler.now()
+
+
+class ConnectionGate:
+    """กันไม่ให้คนเดียวกินการเชื่อมต่อทั้งระบบ
+
+    การเชื่อมต่อแต่ละสายกินหน่วยความจำคงที่ ไม่ว่าผู้เล่นจะยิงอะไรเข้ามาก็ตาม
+    ถ้าไม่จำกัด ใครเปิดสายทิ้งไว้เป็นพันสายก็ทำให้โหนดนี้รับไม่ไหว
+    และเมื่อกระจายหลายเครื่อง แต่ละโหนดต้องแบกได้จริง
+
+    อยู่ที่นี่ ไม่ใช่ใน ws.py เพราะเป็นนโยบายของศูนย์กลาง ไม่ใช่รายละเอียดของ transport
+    ทำให้ทดสอบได้โดยไม่ต้องมี WebSocket จริง
+    """
+
+    def __init__(
+        self,
+        max_per_peer: int = MAX_CONNECTIONS_PER_PEER,
+        max_total: int = MAX_CONNECTIONS_TOTAL,
+    ) -> None:
+        self.max_per_peer = max_per_peer
+        self.max_total = max_total
+        self._by_peer: dict[str, int] = {}
+
+    def admit(self, peer: str) -> bool:
+        """รับการเชื่อมต่อไหม ถ้าไม่รับผู้เรียกต้องปิดเอง ไม่ใช่รอให้ hub ตัดสินใจ"""
+        if sum(self._by_peer.values()) >= self.max_total:
+            logger.warning("ปฏิเสธการเชื่อมต่อ ถึงเพดานรวม %d", self.max_total)
+            return False
+        current = self._by_peer.get(peer, 0)
+        if current >= self.max_per_peer:
+            logger.warning("ปฏิเสธการเชื่อมต่อ %s เต็มแล้ว (%d)", peer, current)
+            return False
+        self._by_peer[peer] = current + 1
+        return True
+
+    def release(self, peer: str) -> None:
+        """คืนที่เมื่อสายปิด ต้องเรียกเสมอ ไม่งั้นตัวเลขจะไม่เคยลดลง"""
+        current = self._by_peer.get(peer, 0)
+        if current <= 1:
+            self._by_peer.pop(peer, None)
+        else:
+            self._by_peer[peer] = current - 1
+
+    @property
+    def total(self) -> int:
+        return sum(self._by_peer.values())
 
 
 class MatchSink(Protocol):
@@ -66,6 +162,9 @@ class Hub:
         bot_step_delay: float = 0.6,
         autopilot_grace: float = 15.0,
         autopilot_level: str = "normal",
+        session_ttl: float = SESSION_TTL,
+        finished_match_ttl: float = FINISHED_MATCH_TTL,
+        reap_interval: float = REAP_INTERVAL,
         rng: random.Random | None = None,
         sink: MatchSink | None = None,
         cluster: Cluster | None = None,
@@ -78,6 +177,9 @@ class Hub:
         self.bot_step_delay = bot_step_delay
         self.autopilot_grace = autopilot_grace
         self.autopilot_level = autopilot_level
+        self.session_ttl = session_ttl
+        self.finished_match_ttl = finished_match_ttl
+        self.reap_interval = reap_interval
         self._rng = rng or random.Random()
         # ที่บันทึกประวัติ — ไม่ใส่ก็เล่นได้ครบ แค่ไม่เก็บอะไรไว้
         self.sink = sink
@@ -88,6 +190,10 @@ class Hub:
         self.matches: dict[str, Match] = {}
         self.queues: dict[str, list[str]] = {}
         self._autopilot_timers: dict[str, Any] = {}
+        self._reaper: Any = None
+        # ตัวจำกัดความถี่ ใช้นาฬิกาเดียวกับ scheduler เพื่อให้ทดสอบได้
+        self._hello_counter = WindowCounter(SchedulerClock(self.scheduler))
+        self._message_counter = WindowCounter(SchedulerClock(self.scheduler))
 
         # ไม่ใส่ cluster = ทำงานเครื่องเดียว ซึ่งเป็นค่าเริ่มต้นและไม่ต้องพึ่งอะไรเลย
         self.cluster = cluster
@@ -102,21 +208,80 @@ class Hub:
 
     # ── ทางเข้าจาก transport ────────────────────────────────────────────────
 
+    def node_status(self) -> dict[str, Any]:
+        """สภาพของโหนดนี้ รวมชื่อโหนดและสถานะคลัสเตอร์
+
+        แยกจาก stats() ตรง ๆ เพราะตอนกระจายหลายเครื่อง ต้องรู้ว่าตัวเลขที่เห็น
+        มาจากโหนดไหน ไม่งั้นเห็นสี่ค่าที่ไม่รู้ที่มาแล้วเอามากลบกัน
+        """
+        snapshot = self.stats
+        return {
+            "node": self.cluster.node_id if self.cluster is not None else "standalone",
+            "clustered": self.cluster is not None,
+            "clusterConnected": bool(self.cluster is not None and self.cluster.connected),
+            **snapshot,
+        }
+
+    def _allow_hello(self, connection: Connection) -> bool:
+        """จำกัดจำนวนครั้งที่ขอสร้าง session ใหม่
+
+        ผู้เล่นคนเดียวต้องการ session เดียว การเรียกซ้ำเกินไปแปลว่าเป็นการยิง
+        ไม่ใช่การใช้งานจริง เช่น สคริปต์ที่ต่อแล้วทิ้งเพื่อสร้าง session ทิ้งเปล่า
+        """
+        peer = self._peer_of(connection)
+        if self._hello_counter.allow(peer, HELLO_LIMIT, HELLO_WINDOW):
+            return True
+        connection.send({"type": "error", "code": "rate_limited"})
+        return False
+
+    def _allow_message(self, connection: Connection) -> bool:
+        """จำกัดความถี่ของข้อความ เพื่อกันการยิงรัวที่กินเวลาประมวลผล
+
+        ต่อสายไม่ใช่ต่อผู้เล่น เพราะผู้เล่นคนเดียวเปิดได้หลายแท็บ
+        และโหนดหนึ่งรับได้หลายคน ตัวจำกัดจริงอยู่ที่การเชื่อมต่อใน ws.py
+        """
+        if self._message_counter.allow(connection.id, MESSAGE_LIMIT, MESSAGE_WINDOW):
+            return True
+        # ตัดการเชื่อมต่อแทนที่จะส่ง error ซ้ำ ๆ เพราะ client ที่ยิงรัว
+        # ไม่ได้อ่าน error อยู่ดี และสายก็ยังกินทรัพยากรอยู่
+        logger.warning("ข้อความถี่เกินกำหนด ตัดการเชื่อมต่อ %s", connection.id)
+        connection.close()
+        return False
+
+    @staticmethod
+    def _peer_of(connection: Connection) -> str:
+        """IP ของผู้เล่น — ขาดไปได้ในเทสต์ที่ใช้การเชื่อมต่อปลอม"""
+        return str(getattr(connection, "peer", "unknown"))
+
     def handle(self, connection: Connection, message: Any) -> None:
+        # กันการยิงข้อความรัว ๆ ก่อนแตะตรรกะใด ๆ
+        # ข้อความหนึ่งบรรทัดเล็กมาก แต่การยิงเร็ว ๆ นาน ๆ กินทั้ง CPU และหน่วยความจำ
+        # ต้องอยู่ก่อนการตรวจรูปแบบด้วย ไม่งั้นการยิงขยะจะไม่ถูกจำกัดเลย
+        if not self._allow_message(connection):
+            return
         if not isinstance(message, dict) or not isinstance(message.get("type"), str):
             connection.send({"type": "error", "code": "invalid_message"})
             return
 
         kind = message["type"]
+        # hello โดยเฉพาะ ต้องจำกัดแยก เพราะแต่ละครั้งที่เรียกคือการสร้าง session ใหม่
+        # ถ้าไม่จำกัด ใครก็ยิง hello รัว ๆ เพื่อสร้าง session ทิ้งเปล่าได้ไม่จำกัด
+        if kind == "hello" and not self._allow_hello(connection):
+            return
         if kind == "hello":
-            self._on_hello(connection, message)
+            self._on_hello(
+                connection,
+                message,
+                identity=getattr(connection, "identity", None),
+                token=getattr(connection, "token", None),
+            )
             return
 
         session = self.sessions.get(connection.session_id or "")
         if session is None:
             connection.send({"type": "error", "code": "no_session"})
             return
-        session.last_seen = time.monotonic()
+        session.last_seen = self.scheduler.now()
 
         if session.home:
             # ชื่ออยู่กับโหนดที่ถือ socket เสมอ แล้วติดไปกับซองทุกใบ
@@ -150,7 +315,7 @@ class Hub:
 
     def _went_offline(self, session: Session) -> None:
         """ผู้เล่นไม่มีการเชื่อมต่อเหลือแล้ว ไม่ว่าจะหลุดจากเครื่องนี้หรือจากเครื่องอื่น"""
-        session.last_seen = time.monotonic()
+        session.last_seen = self.scheduler.now()
         self._leave_queue(session)
         if session.room_id:
             self._on_leave_room(session, {}, silent=True)
@@ -164,7 +329,18 @@ class Hub:
 
     # ── ตัวตน ───────────────────────────────────────────────────────────────
 
-    def _on_hello(self, connection: Connection, message: dict[str, Any]) -> None:
+    def _on_hello(
+        self,
+        connection: Connection,
+        message: dict[str, Any],
+        identity: Identity | None = None,
+        token: str | None = None,
+    ) -> None:
+        """เริ่มการเล่น
+
+        identity และ token ส่งมาจากชั้น transport ซึ่งค้นฐานข้อมูลได้
+        ถ้าไม่ส่งมา hub จะตรวจลายเซ็นเอง ซึ่งพอสำหรับผู้เล่นชั่วคราว
+        """
         # client รุ่นเก่าต้องได้คำตอบที่เข้าใจได้ ไม่ใช่เจอข้อความแปลก ๆ แล้วพังเงียบ
         protocol = message.get("protocol")
         if isinstance(protocol, int) and protocol != PROTOCOL_VERSION:
@@ -177,7 +353,11 @@ class Hub:
             )
             return
 
-        claim: Identity | None = verify_token(message.get("token"), self.auth_secret)
+        claim = identity
+        if claim is None and not looks_like_session(message.get("token")):
+            # ที่ไม่ใช่เซสชันค่อยตรวจลายเซ็นเอง เพราะเซสชันต้องค้นฐานข้อมูล
+            # ซึ่งทำในชั้น transport ที่รอ I/O ได้ ไม่ใช่ตรงนี้
+            claim = verify_token(message.get("token"), self.auth_secret)
         session = self.sessions.get(claim.id) if claim else None
 
         if session is None:
@@ -196,7 +376,7 @@ class Hub:
 
         connection.session_id = session.id
         session.connections.add(connection)
-        session.last_seen = time.monotonic()
+        session.last_seen = self.scheduler.now()
 
         connection.send(
             {
@@ -204,7 +384,11 @@ class Hub:
                 "id": session.id,
                 "name": session.name,
                 "kind": session.kind,
-                "token": sign_token(session.id, session.name, session.kind, self.auth_secret),
+                # บัญชีใช้โทเคนที่ชั้น transport ออกให้ เพราะต้องบันทึกลงฐานข้อมูล
+                # ส่วนผู้เล่นชั่วคราวเซ็นเองได้เลย ไม่ต้องแตะฐานข้อมูล
+                "token": token
+                if token is not None
+                else sign_token(session.id, session.name, session.kind, self.auth_secret),
             }
         )
         connection.send(self._lobby_message())
@@ -940,6 +1124,9 @@ class Hub:
     def _finish_match(self, match: Match) -> None:
         match.clear_clock()
         match.clear_bot()
+        # จดว่าจบแล้ว เพื่อให้ตัวเก็บกวาดรู้ว่าจะปล่อยเมื่อไร
+        # ยังไม่ทิ้งทันที เพราะผู้เล่นยังดูผลและขอเล่นใหม่ได้
+        match.mark_finished(self.scheduler.now())
         self._broadcast_state(match)
         result = match.engine.result
         if self.sink is not None and result is not None:
@@ -1131,10 +1318,17 @@ class Hub:
         return bool(session and session.connections)
 
     def _has_human_presence(self, match: Match) -> bool:
+        """ยังมีคนที่เป็นมนุษย์และยังอยู่ในเกมนี้อยู่จริงหรือไม่
+
+        "อยู่ในเกม" คือยังผูกกับแมตช์นี้อยู่ ไม่ใช่แค่มีการเชื่อมต่ออยู่
+        เพราะหลังจบเกมผู้เล่นยังนั่งดูหน้าสรุปผลอยู่ ถ้านับว่ายังอยู่ในเกม
+        เกมที่จบแล้วก็จะไม่ถูกปล่อยจนกว่าทุกคนจะออกไป ซึ่งไม่เกิดถ้าใครเปิดหน้านั้นค้างไว้
+        """
         return any(
             (session := self.sessions.get(pid)) is not None
             and not session.is_bot
             and session.match_id == match.id
+            and session.connections
             for pid in match.player_ids
         )
 
@@ -1253,6 +1447,8 @@ class Hub:
 
     async def start(self) -> None:
         """เรียกตอนแอปเริ่ม — ต้องมี event loop แล้วถึงจะตั้งงานตามเวลาได้"""
+        # เก็บกวาดต้องทำงานเสมอ ไม่ว่าจะมีคลัสเตอร์หรือไม่
+        self._schedule_reap()
         if self.cluster is None:
             return
         await self.cluster.start()
@@ -1263,12 +1459,75 @@ class Hub:
             self.cluster.broadcast({"kind": "bye"})
             await self.cluster.stop()
 
+    # ── เก็บกวาดสิ่งที่ค้างในหน่วยความจำ ─────────────────────────────────────
+
+    def _schedule_reap(self) -> None:
+        if self._reaper is not None:
+            return
+        self._reaper = self.scheduler.call_later(self.reap_interval, self._reap)
+
+    def _reap(self) -> None:
+        """ปล่อยของที่ไม่มีใครใช้แล้ว
+
+        ทั้ง session และ match เก็บในหน่วยความจาระดับตลอดชีวิตโหนด ถ้าไม่มีที่นี่
+        โหนดที่รันนาน ๆ จะโตไม่จำกัดตามจำนวนผู้เล่นที่ผ่านมาทั้งหมด ไม่ใช่ตามคนที่กำลังออนไลน์
+        """
+        self._reaper = None
+        self._reap_sessions()
+        self._reap_finished_matches()
+        self._schedule_reap()
+
+    def _reap_sessions(self) -> int:
+        """ลืมผู้เล่นที่หลุดไปนานแล้วและไม่ได้อยู่ในห้อง ในคิว หรือในแมตช์
+
+        เงื่อนไข "ยังไม่ว่าง" สำคัญที่สุด เพราะผู้เล่นที่หลุดจากเกมแล้วยังมีนาฬิกาเดิน
+        และมี AI คุมแทนอยู่ ต้องเก็บไว้จนกว่าจะออกจากเกมจริง ๆ
+        """
+        now = self.scheduler.now()
+        expired = [
+            session
+            for session in self.sessions.values()
+            if not session.connections
+            and session.home is None
+            and session.room_id is None
+            and session.match_id is None
+            and session.queued_game is None
+            and not session.is_bot
+            and now - session.last_seen > self.session_ttl
+        ]
+        for session in expired:
+            # ถอนออกจากคิวด้วยเผื่อค้างจากกรณีผิดปกติ
+            self._leave_queue(session)
+            self.sessions.pop(session.id, None)
+        return len(expired)
+
+    def _reap_finished_matches(self) -> int:
+        """ปล่อยแมตช์ที่จบแล้วและไม่มีคนอยู่ต่อแล้ว
+
+        ไม่ใช่แค่รอจนไม่มีคนอยู่ เพราะผู้เล่นที่ดูผลอยู่บนหน้าสรุปผลนับเป็นคนอยู่
+        เขายังกดขอเล่นใหม่ได้ แต่พอครบเวลาที่เก็บผลไว้ก็ต้องปล่อย
+        มิฉะนั้นแมตช์ที่จบแล้วจะอยู่ตลอดชีวิตโหนดตราบที่ผู้เล่นไม่ออกจากเกม
+        """
+        now = self.scheduler.now()
+        stale = [
+            match
+            for match in self.matches.values()
+            if match.finished
+            and (
+                not self._has_human_presence(match)
+                or now - (match.finished_at or 0.0) > self.finished_match_ttl
+            )
+        ]
+        for match in stale:
+            self._dispose_match(match)
+        return len(stale)
+
     def _heartbeat(self) -> None:
         """ประกาศซ้ำเป็นระยะ เผื่อโหนดที่เพิ่งขึ้นมาพลาดรอบก่อน และเก็บกวาดโหนดที่ตายไป"""
         stale = [
             node
             for node, peer in self.peers.items()
-            if time.monotonic() - peer.heard_at > PEER_TIMEOUT
+            if self.scheduler.now() - peer.heard_at > PEER_TIMEOUT
         ]
         for node in stale:
             self._forget_peer(node)
@@ -1399,7 +1658,7 @@ class Hub:
 
     def _env_snapshot(self, sender: str, envelope: dict[str, Any]) -> None:
         snapshot = Snapshot.from_dict(envelope.get("snapshot") or {})
-        snapshot.heard_at = time.monotonic()
+        snapshot.heard_at = self.scheduler.now()
         previous = self.peers.get(sender)
         self.peers[sender] = snapshot
         if previous is not None and previous.as_dict() == snapshot.as_dict():
@@ -1430,7 +1689,7 @@ class Hub:
                 }
             )
             return
-        session.last_seen = time.monotonic()
+        session.last_seen = self.scheduler.now()
         handler(session, message)
 
     def _env_attach(self, sender: str, envelope: dict[str, Any]) -> None:
@@ -1574,7 +1833,12 @@ class Hub:
         return {pid for pid in ids if self._is_connected(pid) or pid in elsewhere}
 
     @property
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, Any]:
+        """จำนวนสิ่งที่โหนดนี้กำลังถืออยู่
+
+        ไม่ใช่หน้าจอ เป็นตัวเลขสำหรับผู้ดูแลระบบและการเตือนล่วงหน้า
+        ถ้าตัวไหนโตผิดปกติแปลว่ามีสิ่งที่ลืมปล่อย
+        """
         return {
             "sessions": len(self.sessions),
             "rooms": len(self.rooms),

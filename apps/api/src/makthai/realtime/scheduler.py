@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import heapq
 import itertools
+import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -21,12 +22,24 @@ class TimerHandle(Protocol):
 class Scheduler(Protocol):
     def call_later(self, delay: float, callback: Callable[[], Any]) -> TimerHandle: ...
 
+    def now(self) -> float:
+        """เวลาปัจจุบันของนาฬิกาที่ตั้งงานไว้
+
+        ทุกอย่างที่วัดระยะเวลาต้องอ่านจากนี่ ไม่ใช่ time.monotonic() ตรง ๆ
+        เพราะตอนเทสต์เวลาเดินตามที่สั่งเท่านั้น ถ้าไปอ่านนาฬิกาจริง
+        เวลาที่ผ่านไปในเทสต์จะไม่ตรงกับที่ตั้งไว้ ทำให้ทดสอบเรื่องเวลาไม่ได้จริง
+        """
+        ...
+
 
 class AsyncioScheduler:
     """ใช้ตอนรันจริง"""
 
     def call_later(self, delay: float, callback: Callable[[], Any]) -> TimerHandle:
         return asyncio.get_running_loop().call_later(delay, callback)
+
+    def now(self) -> float:
+        return time.monotonic()
 
 
 class _ManualHandle:
@@ -43,29 +56,33 @@ class ManualScheduler:
     """ใช้ในเทสต์ — เวลาเดินเมื่อสั่งเท่านั้น ทำให้ผลลัพธ์เหมือนเดิมทุกครั้ง"""
 
     def __init__(self) -> None:
-        self.now = 0.0
+        self._now = 0.0
         self._queue: list[tuple[float, int, _ManualHandle, Callable[[], Any]]] = []
         self._counter = itertools.count()
 
     def call_later(self, delay: float, callback: Callable[[], Any]) -> TimerHandle:
         handle = _ManualHandle()
         heapq.heappush(
-            self._queue, (self.now + max(0.0, delay), next(self._counter), handle, callback)
+            self._queue, (self._now + max(0.0, delay), next(self._counter), handle, callback)
         )
         return handle
 
+    def now(self) -> float:
+        """เวลาตามที่เทสต์เดินให้ — เริ่มที่ศูนย์เสมอ ผลลัพธ์จึงเหมือนเดิมทุกครั้ง"""
+        return self._now
+
     def advance(self, seconds: float) -> int:
         """เดินเวลาไปข้างหน้า แล้วเรียกทุกตัวจับเวลาที่ถึงกำหนด"""
-        target = self.now + seconds
+        target = self._now + seconds
         fired = 0
         while self._queue and self._queue[0][0] <= target:
             when, _, handle, callback = heapq.heappop(self._queue)
-            self.now = when
+            self._now = when
             if handle.cancelled:
                 continue
             callback()
             fired += 1
-        self.now = target
+        self._now = target
         return fired
 
     def run_pending(self, limit: int = 200) -> int:

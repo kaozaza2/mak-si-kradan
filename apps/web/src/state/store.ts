@@ -270,7 +270,37 @@ export class Store {
     }
   }
 
-  signOut(): void {
+  async signOut(): Promise<void> {
+    // บอกเซิร์ฟเวอร์ก่อนล้างโทเคนในเครื่อง
+    // การลบในเครื่องอย่างเดียวไม่ได้ปิดเซสชันฝั่งเซิร์ฟเวอร์
+    // โทเคนที่อาจถูกเก็บไว้ยังใช้ต่อได้จนหมดอายุ
+    try {
+      await post("/api/v1/auth/logout", {});
+    } catch {
+      // ออกจากระบบเสมอ แม้เซิร์ฟเวอร์ไม่ตอบ เพราะคงสถานะบนเครื่องนี้
+      // แล้วผู้ใช้ตั้งใจออก ไม่ควรค้างอยู่เพราะเรียกเซิร์ฟเวอร์ไม่สำเร็จ
+      // เซสชันที่ค้างอยู่จะหมดอายุเอง
+    }
+    this.finishSignOut();
+  }
+
+  /** ปิดทุกเครื่อง — ใช้เมื่อรู้ว่ามีคนอื่นใช้บัญชีนี้อยู่ */
+  async closeOtherSessions(): Promise<void> {
+    try {
+      const result = await post<{ token: string; closed: number }>(
+        "/api/v1/auth/sessions",
+        {},
+      );
+      setAuthToken(result.token);
+      GameSocket.rememberToken(result.token);
+      this.socket.reconnect();
+      this.toast(t("sessions_closed", { count: result.closed }));
+    } catch (error) {
+      this.toast(t(error instanceof ApiError ? error.code : "server_error"), "error");
+    }
+  }
+
+  private finishSignOut(): void {
     clearAuthToken();
     GameSocket.clearIdentity();
     this.set({

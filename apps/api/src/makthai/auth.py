@@ -14,11 +14,46 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
+
+#: ความยาวขั้นต่ำของ AUTH_SECRET ที่ยอมรับได้
+#: ต้องยาวพอให้เดายาก และเท่ากันทุก node ไม่งั้น token ข้ามเครื่องไม่ผ่าน
+#: อยู่ในไฟล์นี้เพราะ auth ต้องใช้ และไฟล์นี้ต้องไม่พึ่ง pydantic
+#: เพื่อให้ทดสอบส่วนนี้ได้โดยไม่ต้องติดตั้ง dependency ทั้งหมด
+MIN_AUTH_SECRET = 32
 
 TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 
+#: อายุโทเคนของผู้เล่นชั่วคราว — สั้นกว่าเพราะไม่มีอะไรต้องรักษาไว้
+#: ถ้าหลุดก็แค่ได้คนใหม่ ต่างจากบัญชีที่มีอันดับและประวัติผูกอยู่
+GUEST_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
+
+#: ขึ้นต้นด้วยอักษรนี้เพื่อบอกว่าเป็นเซสชัน ไม่ใช่ token ของผู้เล่นชั่วคราว
+#: ต้องแยกออกจากกันให้ชัด เพราะสองแบบนี้ตรวจคนละที่ — ตัวหนึ่งเซ็นเอง
+#: อีกตัวต้องค้นฐานข้อมูล ถ้าสลับกันจะได้ผิด
+SESSION_PREFIX = "s_"
+
 Kind = Literal["guest", "user"]
+
+
+def looks_like_session(token: object) -> bool:
+    """โทเคนนี้ต้องตรวจด้วยการค้นฐานข้อมูลหรือเปล่า
+
+    อยู่ในไฟล์นี้เพราะทั้ง HTTP และ WebSocket ต้องตัดสินตรงนี้ก่อน
+    แต่ไฟล์นี้ต้องไม่พึ่งฐานข้อมูล เพื่อให้ทดสอบได้ในไฟล์เดียว
+    """
+    return isinstance(token, str) and token.startswith(SESSION_PREFIX)
+
+
+def as_utc(moment: datetime) -> datetime:
+    """ตีความเวลาที่ไม่มีโซนเวลาให้เป็น UTC
+
+    SQLite คืน datetime ที่ไม่มีโซนเวลากลับมา แต่ Postgres คืนมาพร้อมโซนเวลา
+    ถ้าเอาไปเทียบกับเวลาปัจจุบันตรง ๆ จะพังเฉพาะตอนรันบน SQLite
+    ซึ่งเป็นข้อผิดพลาดที่จะไม่เจอตอนรันบน production
+    """
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +153,7 @@ def resolve_secret(configured: str) -> tuple[str, bool]:
     ไม่ตั้งไว้แล้วสุ่มใหม่ทุกครั้งที่รีสตาร์ต แปลว่าทุกคนหลุดล็อกอิน
     และหลาย node จะตรวจ token ของกันและกันไม่ได้
     """
-    if configured and len(configured) >= 16:
+    if configured and len(configured) >= MIN_AUTH_SECRET:
         return configured, False
     return secrets.token_hex(32), True
 

@@ -58,6 +58,9 @@ class Player(Base):
     received_requests: Mapped[list[Friendship]] = relationship(
         back_populates="addressee", foreign_keys="Friendship.addressee_id"
     )
+    sessions: Mapped[list[PlayerSession]] = relationship(
+        back_populates="player", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (Index("ix_players_ranking", "kind", "rating"),)
 
@@ -145,6 +148,40 @@ class MatchAction(Base):
     match: Mapped[Match] = relationship(back_populates="actions")
 
     __table_args__ = (UniqueConstraint("match_id", "turn", name="uq_match_turn"),)
+
+
+class PlayerSession(Base):
+    """เซสชันฝั่งเซิร์ฟเวอร์ของบัญชี — ตัวที่ยกเลิกได้
+
+    เก็บเฉพาะแฮชของโทเคน ไม่เก็บโทเคนจริง ฐานข้อมูลรั่วก็เอาไปใช้ไม่ได้
+    มีแถวนี้การเปลี่ยนรหัสผ่านหรือการแบนถึงยกเลิกการเข้าของทุกทางได้จริง
+
+    ผู้เล่นชั่วคราวไม่มีแถวนี้ เพราะไม่มีอะไรต้องปกป้อง และการบังคับให้มี
+    ฐานข้อมูลจะทำให้เล่นไม่ได้ตอนไม่ได้ตั้ง DATABASE_URL
+    """
+
+    __tablename__ = "player_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    #: sha256 ของโทเคน — ค้นด้วยดัชนีนี้ เพราะแต่ละคำขอต้องหา
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    #: อายุที่ใช้งานได้ เซสชันที่หมดอายุแล้วต้องใช้ไม่ได้แม้ยังไม่ถูกลบ
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    #: ยกเลิกเมื่อไร — ไม่ลบแถวทิ้ง เพื่อให้รู้ว่าเคยใช้งานและถูกปิดเมื่อไร
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    #: เวลาที่ใช้จริงล่าสุด ใช้แยกเซสชันที่ยังมีคนใช้ออกจากที่ลืมไปแล้ว
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    player: Mapped[Player] = relationship(back_populates="sessions")
+
+    __table_args__ = (Index("ix_player_sessions_player", "player_id"),)
+
+    @property
+    def revoked(self) -> bool:
+        return self.revoked_at is not None
 
 
 class Friendship(Base):

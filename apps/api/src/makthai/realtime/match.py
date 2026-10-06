@@ -48,6 +48,22 @@ class Match:
     _bot_timer: TimerHandle | None = None
     #: แผนของบอทที่กำลังเดินทีละก้าวอยู่
     bot_plan: list[BotAction] = field(default_factory=list)
+    #: เวลาที่เกมจบ ใช้ตัดสินว่าจะเก็บผลไว้ให้ดูนานแค่ไหนก่อนทิ้ง
+    #: ต้องมาจากนาฬิกาของ scheduler เหมือนที่อื่น ไม่ใช่ time.monotonic()
+    #: ตรง ๆ ไม่งั้นเทสต์ที่เดินเวลาเองจะเทียบกับเวลาจริงไม่ได้
+    finished_at: float | None = None
+
+    @property
+    def finished(self) -> bool:
+        return self.finished_at is not None
+
+    def mark_finished(self, now: float) -> None:
+        """จดว่าเกมจบแล้ว — ยังไม่ทิ้ง เพราะผู้เล่นอาจดูผลหรือขอเล่นใหม่อยู่
+
+        รับเวลามาจากผู้เรียกเพื่อให้ใช้นาฬิกาเดียวกับ hub
+        """
+        if self.finished_at is None:
+            self.finished_at = now
 
     # ── ที่นั่ง ─────────────────────────────────────────────────────────────
 

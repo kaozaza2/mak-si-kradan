@@ -1,4 +1,5 @@
 from makthai.auth import (
+    MIN_AUTH_SECRET,
     Identity,
     new_guest_id,
     new_guest_name,
@@ -60,8 +61,10 @@ def test_รหัสห้องอ่านง่ายไม่มีตั�
 def test_ไม่ตั้งซีเคร็ตจะสุ่มให้พร้อมบอกว่าเป็นค่าชั่วคราว():
     secret, ephemeral = resolve_secret("")
     assert ephemeral and len(secret) >= 32
-    assert resolve_secret("x" * 20) == ("x" * 20, False)
-    # สั้นเกินไปก็ถือว่าไม่ได้ตั้ง
+    # ยาวพอก็ใช้ได้ ต้องเหมือนกันทุก node ถึง token ข้ามเครื่องจะผ่าน
+    assert resolve_secret("x" * MIN_AUTH_SECRET) == ("x" * MIN_AUTH_SECRET, False)
+    # สั้นเกินกำหนดถือว่าไม่ได้ตั้ง เพราะเดาง่ายเกินไป
+    assert resolve_secret("x" * (MIN_AUTH_SECRET - 1))[1] is True
     assert resolve_secret("sh0rt")[1] is True
 
 

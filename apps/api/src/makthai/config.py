@@ -6,6 +6,8 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from makthai.auth import MIN_AUTH_SECRET
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
@@ -33,6 +35,16 @@ class Settings(BaseSettings):
     auth_secret: str = ""
     turn_seconds: int = 45
 
+    #: จำนวนสายที่คนหนึ่งคนเปิดพร้อมกันได้ คนปกติเปิดไม่กี่แท็บ
+    max_connections_per_peer: int = 8
+    #: จำนวนสายที่โหนดหนึ่งรับได้พร้อมกัน แต่ละสายกินหน่วยความจำคงที่
+    #: ต้องตั้งให้พอดีกับขนาดเครื่อง ไม่งั้นโหนดจะตายก่อนที่จะใช้เครื่องเต็ม
+    max_connections_total: int = 10_000
+
+    #: อายุเซสชันของบัญชีผู้ใช้เป็นวัน
+    #: เซสชันถูกยกเลิกได้ เช่นตอนเปลี่ยนรหัสผ่านหรือถูกแบน
+    session_ttl_days: int = 30
+
     #: ไม่ตั้งทั้ง smtp และ webhook = พิมพ์รหัสยืนยันลงบันทึกให้เห็นตอนพัฒนา
     mail_webhook_url: str = ""
     mail_webhook_token: str = ""
@@ -56,7 +68,53 @@ class Settings(BaseSettings):
     def allowed_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() == "production"
+
+    def production_problems(self) -> list[str]:
+        """ค่าที่ขาดหรือไม่ปลอดภัยเมื่อรันเป็น production
+
+        ค่าเริ่มต้นของทุกข้อเหมาะกับการพัฒนาบนเครื่อง แต่ไม่ปลอดภัยเมื่อเปิดสู่ภายนอก
+        การตรวจตอนเริ่มทำให้ deploy ที่พลาดตัวแปรหยุดพร้อมคำอธิบาย
+        แทนที่จะขึ้นมากว้างแล้วค่อยรู้ตอนมีคนมาใช้
+        """
+        if not self.is_production:
+            return []
+        problems: list[str] = []
+
+        if len(self.auth_secret) < MIN_AUTH_SECRET:
+            problems.append(
+                f"AUTH_SECRET ต้องยาวอย่างน้อย {MIN_AUTH_SECRET} ตัวอักษร "
+                "(ถ้าไม่ตั้ง ทุก node จะสุ่มคนละค่า และผู้เล่นหลุดตัวตนทุกครั้งที่รีสตาร์ต)"
+            )
+        if self.cors_origins.strip() == "*":
+            problems.append("CORS_ORIGINS ห้ามเป็น * ใน production ต้องระบุ origin ที่อนุญาตจริง")
+        if self.auto_create_tables:
+            problems.append(
+                "AUTO_CREATE_TABLES ต้องเป็น false ใน production "
+                "เพราะ create_all ไม่แก้ตารางที่มีอยู่แล้ว ต้องใช้ alembic upgrade head"
+            )
+        if not self.database_url:
+            problems.append("DATABASE_URL ต้องตั้งใน production ไม่ตั้งจะไม่มีบัญชีผู้ใช้และไม่มีอันดับ")
+        if not self.public_url.startswith("https://"):
+            problems.append(
+                "PUBLIC_URL ต้องเป็น https:// ใน production เพราะลิงก์เชิญจะส่งผ่านทางที่ไม่เข้ารหัส"
+            )
+        if not self.mail_webhook_url and not self.smtp_host:
+            problems.append(
+                "ต้องตั้ง SMTP_HOST หรือ MAIL_WEBHOOK_URL ใน production "
+                "ไม่งั้นรหัสยืนยันจะถูกพิมพ์ลงบันทึกแทนที่จะส่งถึงผู้ใช้"
+            )
+        return problems
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    problems = settings.production_problems()
+    if problems:
+        # ล้มเหลวตอนเริ่ม ไม่ใช่ปล่อยให้รันแล้วพังเงียบตอนมีคนมาใช้
+        # การรันแบบค่าเริ่มต้นของ dev ยังทำได้ เพราะ ENVIRONMENT ไม่ใช่ production
+        raise RuntimeError("ตั้งค่าไม่ครบสำหรับ production:\n  - " + "\n  - ".join(problems))
+    return settings
